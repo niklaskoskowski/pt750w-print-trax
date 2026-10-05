@@ -178,7 +178,8 @@ class EndToEnd(MockBase):
     def test_every_profile_prints_the_same_raster(self):
         bridge, out = self.bridge(12, silent=True, snmp_on=True)
         for profile in p.PROFILES:
-            bridge.print_text("Same", JobParams({"profile": profile}, bridge.cfg))
+            # 180 dpi for all: only some profiles can switch 360 dpi on.
+            bridge.print_text("Same", JobParams({"profile": profile, "highRes": "0"}, bridge.cfg))
         time.sleep(0.3)
         pages = sorted(out.glob("*.png"), key=os.path.getmtime)
         self.assertEqual(len(pages), len(p.PROFILES))
@@ -280,7 +281,7 @@ class Batch(MockBase):
         self.assertEqual(len(list(out.glob("*.png"))), 3)   # three pages …
         self.assertEqual(len(bridge.jobs.list()), 1)        # … one job
         job_bytes = (Path(bridge.cfg.data_dir) / "last-job.bin").read_bytes()
-        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b\x0c"), 3)  # half cut, no chain on every page
+        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b\x4c"), 3)  # half cut, no chain, 360 dpi on every page
         self.assertEqual(job_bytes.count(b"\x0c\x1b\x69\x7a"), 2)   # FF, then the next page
         self.assertTrue(job_bytes.endswith(b"\x1a"))
         with self.assertRaises(ApiError):                        # printed batches are gone
@@ -307,3 +308,24 @@ class Batch(MockBase):
         bridge.batches.add(bid, 0, self.label(), 30, 14, "short")
         res = bridge.print_batch(bid, JobParams({"dryRun": "1"}, bridge.cfg), "along")
         self.assertAlmostEqual(res["job"]["lengthMm"], 30, delta=0.3)  # first page is index 0
+
+
+class HighRes(MockBase):
+    def test_default_on_doubles_the_lines(self):
+        bridge, out = self.bridge(12, silent=True, snmp_on=True)
+        img = Image.new("L", (1063, 496), 255)
+        ImageDraw.Draw(img).rectangle([0, 0, 1062, 495], outline=0, width=14)
+        hi = bridge.print_image(png(img), JobParams({"widthMm": 30, "heightMm": 14}, bridge.cfg))["job"]
+        lo = bridge.print_image(png(img), JobParams({"widthMm": 30, "heightMm": 14, "highRes": "0"},
+                                                    bridge.cfg))["job"]
+        self.assertTrue(hi["highRes"])
+        self.assertFalse(lo["highRes"])
+        self.assertAlmostEqual(hi["lengthMm"], lo["lengthMm"], delta=0.2)   # same size in mm
+        job = p.build_job([b"\xff" * 16], p.JobOptions(tape_mm=12, high_res=True, margin_dots=14))
+        self.assertIn(b"\x1b\x69\x4b\x48", job)       # no chain + high resolution
+        self.assertIn(b"\x1b\x69\x64\x1c\x00", job)  # margin in 360 dpi dots: 28
+
+    def test_profiles_without_esc_i_k_stay_at_180(self):
+        bridge, _ = self.bridge(12, silent=True, snmp_on=True)
+        params = JobParams({"profile": "minimal", "highRes": "1"}, bridge.cfg)
+        self.assertFalse(params.render.high_res)

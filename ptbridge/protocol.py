@@ -136,6 +136,9 @@ MODE_MIRROR = 0x80
 # None sends ESC i A ("cut every n labels") or Z (empty line): both are in
 # the QL/P900 references, not proven on the P750W.
 PROFILES = ("standard", "minimal", "compat", "plain", "ptouch")
+# Only these send ESC i K, which switches 180 x 360 dpi on. Anything else
+# must stay at 180 dpi, or the doubled raster prints the label twice as long.
+HIGH_RES_PROFILES = ("standard", "compat")
 PROFILE_LABELS = {
     "standard": "ESC i z + cut/half cut/margin, TIFF-compressed (rejected by a PT-P750W over Wi-Fi)",
     "minimal": "ESC i z + auto cut, TIFF-compressed",
@@ -260,9 +263,11 @@ def _page_settings(opts: JobOptions) -> bytes:
         adv |= ADV_HALF_CUT
     if not opts.chain:
         adv |= ADV_NO_CHAIN
+    margin = max(0, min(0xFFFF, int(opts.margin_dots)))
     if opts.high_res:
         adv |= ADV_HIGH_RES
-    margin = max(0, min(0xFFFF, int(opts.margin_dots)))
+        # Along the tape a dot is 1/360 inch now: same margin in mm.
+        margin = min(0xFFFF, margin * 2)
     compression = COMPRESSION_TIFF if _line_mode(opts) == "tiff" else COMPRESSION_NONE
     if opts.profile == "ptouch":
         return b""  # compression went out once, before raster mode

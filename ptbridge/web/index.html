@@ -180,7 +180,7 @@
               </div>
               <div class="col-12 col-md-2 d-flex align-items-end">
                 <div class="form-check form-switch mb-1">
-                  <input class="form-check-input" type="checkbox" id="highRes" name="highRes">
+                  <input class="form-check-input" type="checkbox" id="highRes" name="highRes" checked>
                   <label class="form-check-label small" for="highRes">360 dpi</label>
                 </div>
               </div>
@@ -412,7 +412,7 @@
       const v = $(name).value.trim();
       if (v !== '') out[name] = v;
     }
-    if ($('highRes').checked) out.highRes = '1';
+    out.highRes = $('highRes').checked ? '1' : '0';
     if (tab === 'image' && $('dither').checked) out.dither = '1';
     return out;
   }

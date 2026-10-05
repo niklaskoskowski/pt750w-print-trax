@@ -83,7 +83,7 @@ class JobParams:
             threshold=int(_num(src, "threshold", 1, 254, 128)),
             dither=_flag(src, "dither", False),
             invert=_flag(src, "invert", False),
-            high_res=_flag(src, "highRes", False),
+            high_res=_flag(src, "highRes", cfg.high_res),
         )
         self.copies = int(_num(src, "copies", 1, cfg.max_copies, 1))
         self.cut = _choice(src, "cut", ("each", "half", "none"), cfg.cut)
@@ -99,6 +99,8 @@ class JobParams:
         self.dry_run = _flag(src, "dryRun", False)
         default_profile = cfg.profile if cfg.profile in p.PROFILES else "compat"
         self.profile = _choice(src, "profile", p.PROFILES, default_profile)
+        if self.profile not in p.HIGH_RES_PROFILES:
+            self.render.high_res = False
 
     def job_options(self, tape_mm: int, media_type: int) -> p.JobOptions:
         return p.JobOptions(
@@ -351,7 +353,8 @@ class Bridge:
         rendered_all: list[Rendered] = holder["rendered"]
         rendered = rendered_all[0]
         margin_dots = p.mm_to_dots(params.margin_mm)
-        preview = preview_strip([r.lines for r in rendered_all], holder["tape"], 2 * margin_dots, rendered.high_res)
+        gap = 2 * margin_dots * (2 if rendered.high_res else 1)
+        preview = preview_strip([r.lines for r in rendered_all], holder["tape"], gap, rendered.high_res)
         warnings: list[str] = []
         for r in rendered_all:
             for warning in r.warnings:
@@ -376,6 +379,7 @@ class Bridge:
             "scalePct": min(r.scale_pct for r in rendered_all),
             "rotated": rendered.rotated,
             "cut": params.cut,
+            "highRes": rendered.high_res,
             "warnings": warnings + ([] if result is None else result.notes),
             "pagesConfirmed": 0 if result is None else result.pages_confirmed,
             "durationMs": int((time.monotonic() - started) * 1000),

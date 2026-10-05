@@ -33,7 +33,8 @@ def _job_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--chain", action="store_true", help="do not feed/cut after the last label")
     parser.add_argument("--margin-mm", type=float)
     parser.add_argument("--tape", type=float, help="expected tape width in mm")
-    parser.add_argument("--high-res", action="store_true")
+    parser.add_argument("--high-res", action=argparse.BooleanOptionalAction, default=None,
+                        help="180 x 360 dpi (default: PTB_HIGH_RES, on)")
     parser.add_argument("--profile", choices=p.PROFILES, help="command set, see `selftest`")
     parser.add_argument("--dry-run", action="store_true", help="render only, do not print")
     parser.add_argument("--preview", help="write the rendered raster to this PNG")
@@ -47,7 +48,7 @@ def _params(args, extra: dict) -> dict:
         "chain": "1" if args.chain else None,
         "marginMm": args.margin_mm,
         "tapeMm": args.tape,
-        "highRes": "1" if args.high_res else None,
+        "highRes": None if args.high_res is None else ("1" if args.high_res else "0"),
         "profile": args.profile,
         "dryRun": "1" if args.dry_run else None,
         "source": "cli",

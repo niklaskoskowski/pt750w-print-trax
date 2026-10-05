@@ -57,6 +57,7 @@ class Config:
     snmp_port: int
     profile: str
     close_wait: float
+    high_res: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -87,6 +88,8 @@ class Config:
             profile=_env("PTB_PROFILE", "compat").lower(),
             # How long to wait for the printer to close the connection after a job.
             close_wait=max(1.0, _float("PTB_CLOSE_WAIT", 15.0)),
+            # 180 x 360 dpi: twice the resolution along the tape. Default on.
+            high_res=_bool("PTB_HIGH_RES", True),
         )
 
     def ensure_token(self) -> str:

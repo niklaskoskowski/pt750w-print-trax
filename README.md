@@ -142,7 +142,7 @@ Optionen (JSON-Felder bzw. Query-Parameter, alle optional):
 | `marginMm` | Vorschub-Rand je Etikett | `PTB_MARGIN_MM` |
 | `tapeMm` | erwartetes Tape; weicht das geladene ab → `409 TAPE_MISMATCH` | – |
 | `threshold`, `dither`, `invert` | Schwarzweiß-Umsetzung | 128, aus, aus |
-| `highRes` | 180 × 360 dpi | aus |
+| `highRes` | 180 × 360 dpi (doppelte Auflösung längs zum Band; nur Profile `compat`/`standard`) | `PTB_HIGH_RES`, **an** |
 | `profile` | Befehlssatz: `standard` · `minimal` · `compat` · `plain` · `ptouch` – siehe *Befehlssatz finden* | `PTB_PROFILE` |
 | `jobName`, `source` | Anzeige im Verlauf | – |
 | `dryRun` | nur rendern | aus |
