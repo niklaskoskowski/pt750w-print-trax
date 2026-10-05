@@ -125,7 +125,9 @@ MODE_AUTO_CUT = 0x40
 MODE_MIRROR = 0x80
 
 # Command-set profiles. The printer only says "error" when it dislikes a job,
-# so these are the variants `python -m ptbridge selftest` walks through:
+# so these are the variants `python -m ptbridge selftest` walks through.
+# compat is the default: a real PT-P750W over Wi-Fi printed it and rejected
+# standard and minimal (TIFF compression and/or the PI_QUALITY flags).
 #   standard: ESC i z, ESC i M (auto cut), ESC i K (half cut/chain/360 dpi), ESC i d (margin), TIFF
 #   minimal:  ESC i z, ESC i M, TIFF
 #   compat:   ESC i z with media check (kind + width valid), ESC i M/K/d, uncompressed
@@ -135,7 +137,7 @@ MODE_MIRROR = 0x80
 # the QL/P900 references, not proven on the P750W.
 PROFILES = ("standard", "minimal", "compat", "plain", "ptouch")
 PROFILE_LABELS = {
-    "standard": "ESC i z + cut/half cut/margin, TIFF-compressed",
+    "standard": "ESC i z + cut/half cut/margin, TIFF-compressed (rejected by a PT-P750W over Wi-Fi)",
     "minimal": "ESC i z + auto cut, TIFF-compressed",
     "compat": "ESC i z with media check + cut/margin, uncompressed",
     "plain": "auto cut only, no print information, uncompressed",
@@ -226,7 +228,7 @@ class JobOptions:
     high_res: bool = False
     compress: bool = True
     validate_media: bool = False
-    profile: str = "standard"
+    profile: str = "compat"
 
 
 def _print_info(opts: JobOptions, lines: int, page: int, pages: int) -> bytes:

@@ -92,7 +92,7 @@ class JobParams:
         self.name = str(src.get("jobName") or "").strip()[:120]
         self.source = str(src.get("source") or "").strip()[:60]
         self.dry_run = _flag(src, "dryRun", False)
-        default_profile = cfg.profile if cfg.profile in p.PROFILES else "standard"
+        default_profile = cfg.profile if cfg.profile in p.PROFILES else "compat"
         self.profile = _choice(src, "profile", p.PROFILES, default_profile)
 
     def job_options(self, tape_mm: int, media_type: int) -> p.JobOptions:

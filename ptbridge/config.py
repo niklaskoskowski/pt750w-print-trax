@@ -82,7 +82,8 @@ class Config:
             snmp_community=os.environ.get("PTB_SNMP_COMMUNITY", "public").strip(),
             snmp_timeout=max(0.2, _float("PTB_SNMP_TIMEOUT", 1.5)),
             snmp_port=_int("PTB_SNMP_PORT", 161),
-            profile=_env("PTB_PROFILE", "standard").lower(),
+            # compat is what a PT-P750W over Wi-Fi accepts (found with `selftest`).
+            profile=_env("PTB_PROFILE", "compat").lower(),
         )
 
     def ensure_token(self) -> str:

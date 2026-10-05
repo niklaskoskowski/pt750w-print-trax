@@ -185,13 +185,16 @@ einem Fehler, bis der Drucker aus- und wieder eingeschaltet ist, und nennt am En
 docker compose exec bridge python3 -m ptbridge selftest
 ```
 
+**Ergebnis am PT-P750W über WLAN: `compat` druckt** – Standard seit dieser Version. `standard` und
+`minimal` (TIFF-Kompression, Print-Info mit Qualitäts-Flag) quittiert er mit ERROR.
+
 | Profil | Inhalt |
 |---|---|
-| `compat` | `ESC i z` mit Medienprüfung, Auto-Cut/Kettendruck/Rand, unkomprimiert |
+| `compat` | **Standard.** `ESC i z` mit Medienprüfung, Auto-Cut/Halbschnitt/Kettendruck/Rand, unkomprimiert |
 | `plain` | nur Raster-Modus + Auto-Cut, keine Print-Information, unkomprimiert |
 | `ptouch` | byte-genau wie ptouch-print an den P750W (`M 02`, `ESC i a 01`, PackBits als ein Literal) |
 | `minimal` | `ESC i z` + Auto-Cut, TIFF/PackBits |
-| `standard` | `ESC i z` + Auto-Cut/Halbschnitt/Kettendruck/Rand, TIFF/PackBits |
+| `standard` | `ESC i z` + Auto-Cut/Halbschnitt/Kettendruck/Rand, TIFF/PackBits – am P750W per WLAN: ERROR |
 
 Halbschnitt, Kettendruck und eigener Rand wirken nur bei `standard` und `compat`.
 
@@ -240,11 +243,11 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 ## Protokoll-Notizen
 
 Brother *Raster Command Reference PT-E550W/P750W/P710BT*: Invalidate (100 × `00`) → `ESC @` →
-`ESC i S` (Status, 32 Byte) → `ESC i a 01` (Raster) → je Seite `ESC i z` (Print-Info), `ESC i M`
-(Auto-Cut), `ESC i K` (Halbschnitt / Kettendruck / 360 dpi), `ESC i d` (Rand), `M 02`
-(TIFF/PackBits), Rasterzeilen `G nn nn …` (auch leere), `FF` zwischen Seiten, `Ctrl-Z` am Ende.
-Profil `minimal` lässt `ESC i K` und `ESC i d` weg – exakt das, was ptouch-print an den P750W
-schickt. **Nicht** gesendet werden `ESC i A` und `Z`: nicht im P750W-Befehlssatz, ein unbekannter
+`ESC i a 01` (Raster) → je Seite `ESC i z` (Print-Info, Flags `0x86`: Medientyp + Breite gültig),
+`ESC i M` (Auto-Cut), `ESC i K` (Halbschnitt / Kettendruck / 360 dpi), `ESC i d` (Rand), `M 00`
+(unkomprimiert), Rasterzeilen `G 10 00` + 16 Byte, `FF` zwischen Seiten, `Ctrl-Z` am Ende
+(Profil `compat`; die anderen Profile siehe *Befehlssatz finden*). Der Status kommt per SNMP – der
+P750W beantwortet `ESC i S` über WLAN nicht. **Nicht** gesendet werden `ESC i A` und `Z`: nicht im P750W-Befehlssatz, ein unbekannter
 Befehl schickt den Drucker sofort in ERROR. Status zusätzlich per SNMP
 (`1.3.6.1.4.1.2435.3.3.9.1.6.1.0`, gleiches 32-Byte-Paket). Eine Rasterzeile = 16 Byte = 128 Pins quer zum Tape, Bit 7 von Byte 0 = Pin 0; das Tape liegt
 symmetrisch in der Mitte des Kopfes. Code: `ptbridge/protocol.py`, `ptbridge/raster.py`.

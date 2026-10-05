@@ -87,7 +87,7 @@ class Raster(unittest.TestCase):
 
     def test_job_structure(self):
         lines = [bytes(16), b"\xff" * 16]
-        job = p.build_job(lines, p.JobOptions(tape_mm=18, copies=2, half_cut=True))
+        job = p.build_job(lines, p.JobOptions(tape_mm=18, copies=2, half_cut=True, profile="standard"))
         self.assertTrue(job.startswith(b"\x00" * 100 + b"\x1b\x40\x1b\x69\x61\x01"))
         self.assertTrue(job.endswith(b"\x1a"))
         self.assertEqual(job.count(b"\x1b\x69\x7a"), 2)
@@ -95,6 +95,13 @@ class Raster(unittest.TestCase):
         # Not in the P750W command set: ESC i A, and Z for an empty line.
         self.assertNotIn(b"\x1b\x69\x41", job)
         self.assertIn(b"\x47\x02\x00\xf1\x00", job)  # the empty line, as G
+
+    def test_default_is_compat(self):
+        job = p.build_job([b"\xff" * 16], p.JobOptions(tape_mm=12, half_cut=True))
+        # Print information with media kind + width checked, half cut, uncompressed lines.
+        self.assertIn(b"\x1b\x69\x7a\x86\x01\x0c", job)
+        self.assertIn(b"\x1b\x69\x4b\x0c", job)
+        self.assertIn(b"\x4d\x00\x47\x10\x00" + b"\xff" * 16, job)
 
     def test_minimal_profile(self):
         job = p.build_job([b"\xff" * 16], p.JobOptions(tape_mm=12, profile="minimal"))
