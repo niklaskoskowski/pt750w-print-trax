@@ -10,6 +10,10 @@ behind cloudflared or a reverse proxy that terminates TLS.
   POST /api/print             JSON {image: base64, ...options}  or  raw image body + ?options
   POST /api/print/text        JSON {text, align, ...options}
   POST /api/preview           same as /api/print, renders only
+  POST /api/batches           start a batch -> {batchId}
+  POST /api/batches/<id>/labels   JSON {image, widthMm, heightMm, index, name} – one label
+  POST /api/batches/<id>/print    JSON {orientation: along|across, cut, copies, dryRun, …} – one job
+  DELETE /api/batches/<id>    drop it
 
 Auth: "Authorization: Bearer <token>" or "X-Api-Key: <token>".
 """
@@ -32,6 +36,7 @@ log = logging.getLogger("ptbridge.http")
 
 WEB_DIR = Path(__file__).parent / "web"
 PREVIEW_PATH = re.compile(r"^/api/jobs/([0-9a-f]{8,32})/preview\.png$")
+BATCH_PATH = re.compile(r"^/api/batches/([0-9a-f]{24})(/labels|/print)?$")
 IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/bmp", "image/webp", "application/octet-stream")
 
 
@@ -160,8 +165,9 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         path = url.path.rstrip("/")
         query = dict(parse_qsl(url.query))
+        batch = BATCH_PATH.match(path)
         try:
-            if path not in ("/api/print", "/api/print/text", "/api/preview"):
+            if path not in ("/api/print", "/api/print/text", "/api/preview", "/api/batches") and not batch:
                 raise ApiError("NOT_FOUND", "Not found", 404)
             if not self.authorized():
                 # Read and drop the body so the connection stays usable.
@@ -171,6 +177,31 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.read_body()
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             cfg = self.bridge.cfg
+
+            if path == "/api/batches":
+                self.send_json(200, {"ok": True, "batchId": self.bridge.batches.create()})
+                return
+            if batch and batch.group(2) == "/labels":
+                body = self.json_body(raw)
+                try:
+                    index = int(body.get("index", 0))
+                except (TypeError, ValueError) as exc:
+                    raise ApiError("BAD_REQUEST", "index must be a number") from exc
+                size = JobParams(body, cfg).render
+                count = self.bridge.batches.add(batch.group(1), index, decode_image_field(body.get("image")),
+                                                size.width_mm, size.height_mm, str(body.get("name") or "")[:120])
+                self.send_json(200, {"ok": True, "count": count})
+                return
+            if batch and batch.group(2) == "/print":
+                body = self.json_body(raw)
+                orientation = str(body.get("orientation") or "along").lower()
+                if orientation not in ("along", "across"):
+                    raise ApiError("BAD_REQUEST", "orientation must be along or across")
+                result = self.bridge.print_batch(batch.group(1), JobParams(body, cfg), orientation)
+                self.send_json(200, {"ok": True, **result})
+                return
+            if batch:
+                raise ApiError("NOT_FOUND", "Not found", 404)
 
             if path == "/api/print/text":
                 body = self.json_body(raw)
@@ -201,6 +232,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             log.exception("POST %s failed", self.path)
             self.fail(ApiError("SERVER", "Internal error – see the bridge log.", 500))
+
+
+    def do_DELETE(self) -> None:
+        batch = BATCH_PATH.match(urlsplit(self.path).path.rstrip("/"))
+        try:
+            if not batch or batch.group(2):
+                raise ApiError("NOT_FOUND", "Not found", 404)
+            if not self.authorized():
+                raise ApiError("UNAUTHORIZED", "Missing or wrong API token.", 401)
+            self.bridge.batches.delete(batch.group(1))
+            self.send_json(200, {"ok": True})
+        except ApiError as err:
+            self.fail(err)
 
 
 def serve(bridge: Bridge) -> None:

@@ -82,13 +82,17 @@ def _flatten(img: Image.Image) -> Image.Image:
 def _rotation(opts: RenderOptions, img: Image.Image) -> int:
     value = str(opts.rotate).strip().lower()
     if value == "auto":
+        # Long side along the tape: the largest the label gets.
         return 90 if img.height > img.width else 0
+    if value == "across":
+        # Long side across the tape: smaller, and shorter on the strip.
+        return 90 if img.width > img.height else 0
     try:
         angle = int(value) % 360
     except ValueError as exc:
-        raise RenderError("rotate must be auto, 0, 90, 180 or 270") from exc
+        raise RenderError("rotate must be auto, across, 0, 90, 180 or 270") from exc
     if angle not in (0, 90, 180, 270):
-        raise RenderError("rotate must be auto, 0, 90, 180 or 270")
+        raise RenderError("rotate must be auto, across, 0, 90, 180 or 270")
     return angle
 
 
@@ -199,6 +203,41 @@ def preview_png(lines: list[bytes], tape_mm: int | None, high_res: bool = False)
         img = img.resize((img.width, img.height * 2), Image.Resampling.NEAREST)
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def preview_strip(pages: list[list[bytes]], tape_mm: int | None, gap_dots: int, high_res: bool = False) -> bytes:
+    """
+    A whole batch as the strip it becomes: the labels in order, the feed
+    margin between them, a dashed red line where the printer cuts.
+    """
+    if len(pages) == 1:
+        return preview_png(pages[0], tape_mm, high_res)
+    gap = max(4, gap_dots)
+    width = sum(len(lines) for lines in pages) + gap * (len(pages) - 1)
+    strip = Image.new("RGB", (width, HEAD_PINS), (255, 255, 255))
+    x = 0
+    cuts = []
+    for index, lines in enumerate(pages):
+        tile = Image.open(io.BytesIO(preview_png(lines, tape_mm, False)))
+        strip.paste(tile, (x, 0))
+        x += tile.width
+        if index < len(pages) - 1:
+            if tape_mm in TAPES and TAPES[tape_mm][1]:
+                margin = TAPES[tape_mm][1]
+                band = ImageDraw.Draw(strip)
+                band.rectangle([x, 0, x + gap - 1, margin - 1], fill=(225, 228, 232))
+                band.rectangle([x, HEAD_PINS - margin, x + gap - 1, HEAD_PINS], fill=(225, 228, 232))
+            cuts.append(x + gap // 2)
+            x += gap
+    draw = ImageDraw.Draw(strip)
+    for cx in cuts:
+        for y in range(0, HEAD_PINS, 6):
+            draw.line([(cx, y), (cx, min(HEAD_PINS - 1, y + 3))], fill=(220, 38, 38), width=1)
+    if high_res:
+        strip = strip.resize((strip.width, strip.height * 2), Image.Resampling.NEAREST)
+    buf = io.BytesIO()
+    strip.save(buf, "PNG", optimize=True)
     return buf.getvalue()
 
 

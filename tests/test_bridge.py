@@ -257,3 +257,53 @@ class SnmpFallback(MockBase):
         self.assertIsNone(result["tcp"]["statusReply"])
         self.assertEqual(result["snmp"]["parsed"]["tapeMm"], 12)
         self.assertIn("Brother", result["snmp"]["sysDescr"])
+
+
+class Batch(MockBase):
+    def label(self, w=1063, h=496, text="L"):
+        img = Image.new("L", (w, h), 255)
+        ImageDraw.Draw(img).rectangle([0, 0, w - 1, h - 1], outline=0, width=12)
+        ImageDraw.Draw(img).text((40, 40), text, fill=0)
+        return png(img)
+
+    def test_one_job_half_cut_strip(self):
+        bridge, out = self.bridge(12, silent=True, snmp_on=True)
+        bid = bridge.batches.create()
+        for i in range(3):
+            bridge.batches.add(bid, i, self.label(text=str(i)), 30, 14, f"label {i}")
+        res = bridge.print_batch(bid, JobParams({"cut": "half"}, bridge.cfg), "along")
+        job = res["job"]
+        self.assertEqual(job["labels"], 3)
+        self.assertEqual(job["kind"], "batch")
+        self.assertEqual(job["tapeMm"], 12)
+        time.sleep(0.3)
+        self.assertEqual(len(list(out.glob("*.png"))), 3)   # three pages …
+        self.assertEqual(len(bridge.jobs.list()), 1)        # … one job
+        job_bytes = (Path(bridge.cfg.data_dir) / "last-job.bin").read_bytes()
+        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b\x0c"), 3)  # half cut, no chain on every page
+        self.assertEqual(job_bytes.count(b"\x0c\x1b\x69\x7a"), 2)   # FF, then the next page
+        self.assertTrue(job_bytes.endswith(b"\x1a"))
+        with self.assertRaises(ApiError):                        # printed batches are gone
+            bridge.batches.labels(bid)
+
+    def test_across_is_smaller(self):
+        bridge, _ = self.bridge(12, silent=True, snmp_on=True)
+        sizes = {}
+        for orientation in ("along", "across"):
+            bid = bridge.batches.create()
+            bridge.batches.add(bid, 0, self.label(), 30, 14, "wide")
+            res = bridge.print_batch(bid, JobParams({"dryRun": "1", "tapeMm": 12}, bridge.cfg), orientation)
+            sizes[orientation] = (res["job"]["lengthMm"], res["job"]["heightMm"], res["job"]["rotated"])
+        self.assertEqual(sizes["along"][2], 0)
+        self.assertEqual(sizes["across"][2], 90)
+        self.assertLess(sizes["across"][0], sizes["along"][0])
+        # 30 mm across a 12 mm tape: 9.9 mm high, 14 * 9.9/30 ≈ 4.6 mm long.
+        self.assertAlmostEqual(sizes["across"][0], 4.6, delta=0.3)
+
+    def test_order_follows_index(self):
+        bridge, _ = self.bridge(18, silent=True, snmp_on=True)
+        bid = bridge.batches.create()
+        bridge.batches.add(bid, 1, self.label(w=2000), 60, 14, "long")
+        bridge.batches.add(bid, 0, self.label(), 30, 14, "short")
+        res = bridge.print_batch(bid, JobParams({"dryRun": "1"}, bridge.cfg), "along")
+        self.assertAlmostEqual(res["job"]["lengthMm"], 30, delta=0.3)  # first page is index 0

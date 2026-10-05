@@ -311,20 +311,34 @@ def build_job(lines: list[bytes], opts: JobOptions, *, preamble: bool = True) ->
     """
     if not lines:
         raise ValueError("nothing to print")
-    pages = max(1, int(opts.copies))
-    body = encode_lines(lines, _line_mode(opts))
+    return build_pages([lines] * max(1, int(opts.copies)), opts, preamble=preamble)
+
+
+def build_pages(pages: list[list[bytes]], opts: JobOptions, *, preamble: bool = True) -> bytes:
+    """
+    One job, one page per label – each page its own length. With half cut on
+    the printer half-cuts between the pages and fully cuts after the last:
+    one continuous strip. FF ends a page, Ctrl-Z the job.
+    """
+    if not pages or any(not lines for lines in pages):
+        raise ValueError("nothing to print")
+    mode = _line_mode(opts)
     out = bytearray()
     if preamble:
         out += INVALIDATE + INITIALIZE
     if opts.profile == "ptouch":
         out += COMPRESSION_TIFF
     out += RASTER_MODE
-    for page in range(pages):
+    encoded: dict[int, bytes] = {}
+    for index, lines in enumerate(pages):
         if opts.profile not in ("plain", "ptouch"):
-            out += _print_info(opts, len(lines), page, pages)
+            out += _print_info(opts, len(lines), index, len(pages))
         out += _page_settings(opts)
-        out += body
-        out += PRINT_FEED if page == pages - 1 else PRINT
+        key = id(lines)
+        if key not in encoded:  # copies share their encoding
+            encoded[key] = encode_lines(lines, mode)
+        out += encoded[key]
+        out += PRINT_FEED if index == len(pages) - 1 else PRINT
     return bytes(out)
 
 

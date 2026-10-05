@@ -9,7 +9,11 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import re
+import secrets
+import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from . import __version__
@@ -17,7 +21,8 @@ from . import protocol as p
 from .config import Config
 from .jobs import JobLog, new_id
 from .printer import Printer, PrinterError
-from .raster import Rendered, RenderError, RenderOptions, load_image, preview_png, render, text_image
+from .raster import (Rendered, RenderError, RenderOptions, load_image, preview_png, preview_strip, render,
+                     text_image)
 
 log = logging.getLogger("ptbridge")
 
@@ -74,7 +79,7 @@ class JobParams:
             width_mm=_num(src, "widthMm", 1, 1000, None),
             height_mm=_num(src, "heightMm", 1, 1000, None),
             fit=_choice(src, "fit", ("exact", "fill"), "exact"),
-            rotate=_choice(src, "rotate", ("auto", "0", "90", "180", "270"), "auto"),
+            rotate=_choice(src, "rotate", ("auto", "across", "0", "90", "180", "270"), "auto"),
             threshold=int(_num(src, "threshold", 1, 254, 128)),
             dither=_flag(src, "dither", False),
             invert=_flag(src, "invert", False),
@@ -120,6 +125,75 @@ def decode_image_field(value) -> bytes:
         raise ApiError("BAD_REQUEST", "image is not valid base64") from exc
 
 
+# --- batches ----------------------------------------------------------------
+
+BATCH_ID = re.compile(r"^[0-9a-f]{24}$")
+
+
+class BatchStore:
+    """
+    Labels collected one request at a time, printed as one job. Kept in
+    memory as the uploaded images, so they are rendered at print time for
+    the tape loaded then. Abandoned batches expire.
+    """
+
+    TTL = 30 * 60
+    MAX_LABELS = 500
+    MAX_BYTES = 80 * 1024 * 1024
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.items: dict[str, dict] = {}
+
+    def _purge(self) -> None:
+        cutoff = time.time() - self.TTL
+        for key in [k for k, v in self.items.items() if v["touched"] < cutoff]:
+            del self.items[key]
+
+    def create(self) -> str:
+        with self.lock:
+            self._purge()
+            if len(self.items) >= 20:
+                raise ApiError("BUSY", "Too many open batches – print or cancel one first.", 429)
+            batch_id = secrets.token_hex(12)
+            self.items[batch_id] = {"touched": time.time(), "labels": {}, "bytes": 0}
+            return batch_id
+
+    def _get(self, batch_id: str) -> dict:
+        batch = self.items.get(batch_id) if BATCH_ID.match(batch_id or "") else None
+        if batch is None:
+            raise ApiError("NOT_FOUND", "Unknown or expired batch – start it again.", 404)
+        return batch
+
+    def add(self, batch_id: str, index: int, data: bytes, width_mm: float | None, height_mm: float | None,
+            name: str) -> int:
+        load_image(data)  # refuse what cannot be decoded now, not at print time
+        with self.lock:
+            batch = self._get(batch_id)
+            if index not in batch["labels"] and len(batch["labels"]) >= self.MAX_LABELS:
+                raise ApiError("TOO_LARGE", f"A batch holds at most {self.MAX_LABELS} labels.", 413)
+            old = batch["labels"].get(index)
+            size = batch["bytes"] + len(data) - (len(old["data"]) if old else 0)
+            if size > self.MAX_BYTES:
+                raise ApiError("TOO_LARGE", "The batch is too large – print it in parts.", 413)
+            batch["labels"][index] = {"data": data, "widthMm": width_mm, "heightMm": height_mm, "name": name}
+            batch["bytes"] = size
+            batch["touched"] = time.time()
+            return len(batch["labels"])
+
+    def labels(self, batch_id: str) -> list[dict]:
+        with self.lock:
+            batch = self._get(batch_id)
+            batch["touched"] = time.time()
+            if not batch["labels"]:
+                raise ApiError("BAD_REQUEST", "The batch is empty.")
+            return [batch["labels"][i] for i in sorted(batch["labels"])]
+
+    def delete(self, batch_id: str) -> None:
+        with self.lock:
+            self.items.pop(batch_id, None)
+
+
 # --- the bridge -----------------------------------------------------------
 
 class Bridge:
@@ -137,6 +211,7 @@ class Bridge:
             close_wait=cfg.close_wait,
         )
         self.jobs = JobLog(cfg.data_dir, cfg.history)
+        self.batches = BatchStore()
         self.started = time.time()
 
     # -- info ------------------------------------------------------------
@@ -196,7 +271,32 @@ class Bridge:
 
     def print_image(self, data: bytes, params: JobParams) -> dict:
         img = load_image(data)
-        return self._run(lambda tape: render(img, tape, params.render), params, "image")
+        return self._run(lambda tape: [render(img, tape, params.render)], params, "image")
+
+    def print_batch(self, batch_id: str, params: JobParams, orientation: str = "along") -> dict:
+        """
+        Every label of a batch as ONE job: a page per label, in upload order,
+        rendered now for the tape that is loaded now. With cut=half that is
+        one strip, half-cut between the labels and cut once at the end.
+        """
+        labels = self.batches.labels(batch_id)
+        rotate = "across" if orientation == "across" else "auto"
+        images = [(load_image(label["data"]), label) for label in labels]
+
+        def make(tape: int) -> list[Rendered]:
+            return [
+                render(img, tape, replace(params.render, width_mm=label["widthMm"],
+                                          height_mm=label["heightMm"], rotate=rotate))
+                for img, label in images
+            ]
+
+        if not params.name:
+            params.name = f"Batch · {len(labels)} label{'s' if len(labels) != 1 else ''}"
+        result = self._run(make, params, "batch")
+        result["job"]["orientation"] = orientation
+        if not params.dry_run:
+            self.batches.delete(batch_id)
+        return result
 
     def print_text(self, text: str, params: JobParams, align: str = "center") -> dict:
         if not str(text).strip():
@@ -208,7 +308,7 @@ class Bridge:
         params.render.width_mm = params.render.height_mm = None
         if not params.name:
             params.name = str(text).strip().splitlines()[0][:60]
-        return self._run(lambda tape: render(text_image(text, tape, align=align), tape, params.render),
+        return self._run(lambda tape: [render(text_image(text, tape, align=align), tape, params.render)],
                          params, "text")
 
     def _keep_last_job(self, data: bytes) -> None:
@@ -224,13 +324,14 @@ class Bridge:
 
         def build(status: dict | None) -> tuple[bytes, int]:
             tape, source = self._tape_for(status, params)
-            rendered: Rendered = make(tape)
+            rendered: list[Rendered] = make(tape)
             holder.update(rendered=rendered, tape=tape, source=source)
             media = status["mediaType"] if status else 0x01
-            job = p.build_job(rendered.lines, params.job_options(tape, media), preamble=False)
+            pages = [r.lines for r in rendered] * params.copies
+            job = p.build_pages(pages, params.job_options(tape, media), preamble=False)
             if not params.dry_run:
                 self._keep_last_job(p.INVALIDATE + p.INITIALIZE + job)
-            return job, params.copies
+            return job, len(pages)
 
         try:
             if params.dry_run:
@@ -247,8 +348,15 @@ class Bridge:
         except RenderError as exc:
             raise ApiError("BAD_IMAGE", str(exc), 422) from exc
 
-        rendered: Rendered = holder["rendered"]
-        preview = preview_png(rendered.lines, holder["tape"], rendered.high_res)
+        rendered_all: list[Rendered] = holder["rendered"]
+        rendered = rendered_all[0]
+        margin_dots = p.mm_to_dots(params.margin_mm)
+        preview = preview_strip([r.lines for r in rendered_all], holder["tape"], 2 * margin_dots, rendered.high_res)
+        warnings: list[str] = []
+        for r in rendered_all:
+            for warning in r.warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
         job = {
             "id": new_id(),
             "name": params.name or kind,
@@ -259,12 +367,16 @@ class Bridge:
             "tapeMm": holder["tape"],
             "tapeLabel": p.TAPE_LABELS.get(holder["tape"], f"{holder['tape']} mm"),
             "tapeSource": holder["source"],
+            "labels": len(rendered_all),
+            # One label's size, or – for a batch – the first label's size and the whole strip.
             "lengthMm": rendered.length_mm,
             "heightMm": p.dots_to_mm(rendered.height_dots),
-            "scalePct": rendered.scale_pct,
+            "stripMm": round(sum(r.length_mm for r in rendered_all) * params.copies
+                             + (len(rendered_all) * params.copies - 1) * 2 * params.margin_mm, 1),
+            "scalePct": min(r.scale_pct for r in rendered_all),
             "rotated": rendered.rotated,
             "cut": params.cut,
-            "warnings": rendered.warnings + ([] if result is None else result.notes),
+            "warnings": warnings + ([] if result is None else result.notes),
             "pagesConfirmed": 0 if result is None else result.pages_confirmed,
             "durationMs": int((time.monotonic() - started) * 1000),
             "profile": params.profile,

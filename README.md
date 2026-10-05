@@ -117,6 +117,17 @@ Auth: `Authorization: Bearer <token>` oder `X-Api-Key: <token>`.
 | POST | `/api/print` | Bild drucken: JSON `{"image":"<base64>", …}` **oder** Bild als Body + Optionen als Query |
 | POST | `/api/print/text` | Text-Etikett: JSON `{"text":"Zeile 1\nZeile 2","align":"center", …}` |
 | POST | `/api/preview` | wie `/api/print`, rendert nur (Antwort enthält `preview` als PNG-Data-URL) |
+| POST | `/api/batches` | Batch starten → `{"batchId": "…"}` |
+| POST | `/api/batches/<id>/labels` | ein Etikett hinzufügen: JSON `{"image":"<base64>","widthMm":30,"heightMm":14,"index":0,"name":"…"}` |
+| POST | `/api/batches/<id>/print` | alle Etiketten als **ein** Job: JSON `{"orientation":"along\|across","cut":"half","copies":1,"dryRun":false, …}` |
+| DELETE | `/api/batches/<id>` | Batch verwerfen (sonst nach 30 min automatisch) |
+
+**Batch:** eine Seite pro Etikett in einem Job – mit `cut: half` halbgeschnitten zwischen den
+Etiketten und einmal voll geschnitten am Ende, also ein durchgehender Streifen ohne Vorlauf-Verschnitt
+pro Etikett. Die Bilder werden erst beim Drucken für das eingelegte Tape gerendert. `orientation`:
+`along` = lange Seite längs zum Band (so groß wie möglich), `across` = um 90° gedreht, lange Seite quer
+zum Band (kleiner, kürzerer Streifen). `dryRun` liefert die Vorschau des ganzen Streifens mit den
+Schnittlinien.
 
 Optionen (JSON-Felder bzw. Query-Parameter, alle optional):
 
@@ -124,7 +135,7 @@ Optionen (JSON-Felder bzw. Query-Parameter, alle optional):
 |---|---|---|
 | `widthMm`, `heightMm` | physische Größe des Bildes | ohne: Tape füllen |
 | `fit` | `exact` (1:1) · `fill` (Tape-Höhe füllen) | `exact` |
-| `rotate` | `auto` · `0` · `90` · `180` · `270` – `auto` legt Hochformat quer | `auto` |
+| `rotate` | `auto` (lange Seite längs zum Band) · `across` (lange Seite quer, kleiner) · `0` · `90` · `180` · `270` | `auto` |
 | `copies` | 1…`PTB_MAX_COPIES` | 1 |
 | `cut` | `each` · `half` · `none` | `PTB_CUT` |
 | `chain` | Kettendruck (kein Vorschub/Schnitt nach dem letzten Etikett) | `PTB_CHAIN` |
