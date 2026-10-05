@@ -18,6 +18,7 @@ from ptbridge import protocol as p  # noqa: E402
 from ptbridge.config import Config  # noqa: E402
 from ptbridge.mock import serve_in_thread  # noqa: E402
 from ptbridge.raster import RenderOptions, canvas_to_lines, lines_to_canvas, render  # noqa: E402
+from ptbridge.printer import PrinterError  # noqa: E402
 from ptbridge.service import ApiError, Bridge, JobParams  # noqa: E402
 from ptbridge import snmp  # noqa: E402
 
@@ -91,6 +92,15 @@ class Raster(unittest.TestCase):
         self.assertTrue(job.endswith(b"\x1a"))
         self.assertEqual(job.count(b"\x1b\x69\x7a"), 2)
         self.assertIn(b"\x1b\x69\x4b\x0c", job)  # half cut + no chain
+        # Not in the P750W command set: ESC i A, and Z for an empty line.
+        self.assertNotIn(b"\x1b\x69\x41", job)
+        self.assertIn(b"\x47\x02\x00\xf1\x00", job)  # the empty line, as G
+
+    def test_minimal_profile(self):
+        job = p.build_job([b"\xff" * 16], p.JobOptions(tape_mm=12, profile="minimal"))
+        self.assertNotIn(b"\x1b\x69\x4b", job)
+        self.assertNotIn(b"\x1b\x69\x64", job)
+        self.assertIn(b"\x1b\x69\x4d\x40\x4d\x02", job)
 
 
 class Status(unittest.TestCase):
@@ -177,15 +187,34 @@ class SnmpFallback(MockBase):
         res = bridge.print_text("hello", JobParams({}, bridge.cfg))
         self.assertEqual(res["job"]["tapeMm"], 12)
         self.assertEqual(res["job"]["tapeSource"], "printer")
-        self.assertEqual(res["job"]["state"], "sent")
+        # SNMP sees the printing phase come and go – or misses it on a fast job.
+        self.assertIn(res["job"]["state"], ("printed", "sent"))
         self.assertEqual(bridge.printer.status_via, "snmp")
-        # Second job no longer waits for a TCP status that never comes.
-        started = time.monotonic()
-        bridge.print_text("again", JobParams({}, bridge.cfg))
-        self.assertLess(time.monotonic() - started, 2.0)
+        # Jobs stop asking 9100 for a status that never comes.
+        self.assertIs(bridge.printer.tcp_status, False)
         with self.assertRaises(ApiError) as ctx:
             bridge.print_text("x", JobParams({"tapeMm": 18}, bridge.cfg))
         self.assertEqual(ctx.exception.code, "TAPE_MISMATCH")
+
+    def test_minimal_profile_prints(self):
+        bridge, out = self.bridge(12, silent=True, snmp_on=True)
+        res = bridge.print_text("hi", JobParams({"profile": "minimal"}, bridge.cfg))
+        self.assertEqual(res["job"]["tapeMm"], 12)
+        time.sleep(0.3)
+        self.assertEqual(len(list(out.glob("*.png"))), 1)
+
+    def test_error_after_job_is_reported(self):
+        bridge, _ = self.bridge(12, silent=True, snmp_on=True)
+        # What the old bridge sent: ESC i A, which the printer does not know.
+        bad = p.build_job([b"\xff" * 16], p.JobOptions(tape_mm=12), preamble=False)
+        bad = bad.replace(b"\x1b\x69\x4b", b"\x1b\x69\x41\x01\x1b\x69\x4b", 1)
+        with self.assertRaises(PrinterError) as ctx:
+            bridge.printer.run(lambda status: (bad, 1))
+        self.assertIn("went into error", ctx.exception.message)
+        # And the next job is refused up front instead of sent into the error.
+        with self.assertRaises(ApiError) as ctx:
+            bridge.print_text("x", JobParams({}, bridge.cfg))
+        self.assertEqual(ctx.exception.code, "PRINTER_ERROR")
 
     def test_probe(self):
         bridge, _ = self.bridge(12, silent=True, snmp_on=True)

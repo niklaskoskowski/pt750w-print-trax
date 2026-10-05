@@ -223,15 +223,19 @@ class Printer:
                     raise PrinterError("SEND_FAILED", f"Connection dropped while sending: {exc}") from exc
 
                 result = JobResult(state="sent", status_before=before, status_after=None, bytes_sent=len(job))
-                if before is not None and self.status_via == "tcp":
+                tcp_confirmed = before is not None and self.status_via == "tcp"
+                if tcp_confirmed:
                     self._await(sock, pages, result)
-                elif before is not None:
-                    result.notes.append("Tape read via SNMP – job sent, completion not confirmed.")
-                else:
-                    result.notes.append("No status from the printer (TCP 9100 or SNMP) – "
-                                        "sized for the requested/default tape, not confirmed.")
             finally:
                 self._close(sock, 1.0)
+            if not tcp_confirmed:
+                watched = self._watch_snmp(pages, result)
+                if before is None:
+                    result.notes.append("No status before the job (TCP 9100 or SNMP) – "
+                                        "sized for the requested/default tape.")
+                if result.state != "printed":
+                    result.notes.append("Sent; no error reported afterwards (SNMP)." if watched
+                                        else "Sent, not confirmed – the printer reports nothing back.")
             self.last_error = None
             log.info("job %s: %d bytes, %d page(s), %.1fs", result.state, result.bytes_sent, pages,
                      time.monotonic() - started)
@@ -241,6 +245,39 @@ class Printer:
             raise
         finally:
             self.lock.release()
+
+    def _watch_snmp(self, pages: int, result: JobResult) -> bool:
+        """
+        After a job the print connection did not confirm: poll SNMP for an
+        error, and for the printing phase coming and going. False when SNMP
+        does not answer at all.
+        """
+        if not self.snmp_community:
+            return False
+        sent = time.monotonic()
+        deadline = sent + min(self.wait_timeout, 6.0 + 3.0 * pages)
+        seen_printing = False
+        polled = False
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            st = self._snmp_status()
+            if st is None:
+                return polled
+            polled = True
+            result.status_after = st
+            self._remember(st)
+            if st["errors"] or st["statusType"] == 0x02:
+                raise PrinterError("PRINTER_ERROR", "Printer went into error after the job: "
+                                   + (", ".join(st["errors"]) or "no detail given") + ".", 409, st)
+            if st["phase"] == "printing":
+                seen_printing = True
+            elif seen_printing:
+                result.state = "printed"
+                result.pages_confirmed = pages
+                return True
+            elif time.monotonic() - sent > 3.0:
+                return True  # idle and no error: nothing more to learn
+        return polled
 
     def _await(self, sock: socket.socket, pages: int, result: JobResult) -> None:
         """Read status packets until every page is confirmed, an error, or a timeout."""

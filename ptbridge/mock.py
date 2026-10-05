@@ -3,7 +3,12 @@ A fake PT-P750W on TCP 9100, for testing without the printer.
 
 It answers status requests, decodes every page it receives exactly as the
 printer would read it and writes it to <out>/<time>-<n>.png, then reports
-"printing completed". --silent emulates a printer that never answers.
+"printing completed". --silent emulates a printer that never answers on 9100
+(like the real one over Wi-Fi); --snmp-port adds the SNMP agent that does.
+
+Strict on purpose: only the PT-P750W command set is accepted. Anything else
+puts the mock into an error state, as an unknown command does on the
+printer, and it stays there until restarted.
 """
 
 from __future__ import annotations
@@ -29,13 +34,25 @@ class Incomplete(Exception):
 _page_counter = itertools.count(1)
 
 
-class Session:
-    def __init__(self, conn: socket.socket, tape_mm: int, out: Path, silent: bool, errors: tuple[int, int]):
-        self.conn = conn
+class MockState:
+    """What the printer's status packet says – shared by 9100 and SNMP."""
+
+    def __init__(self, tape_mm: int, errors: tuple[int, int]):
         self.tape_mm = tape_mm
+        self.errors = list(errors)
+        self.phase = 0
+
+    def packet(self, status_type: int = 0x00) -> bytes:
+        return p.fake_status(self.tape_mm, status_type=status_type, errors=tuple(self.errors), phase=self.phase)
+
+
+class Session:
+    def __init__(self, conn: socket.socket, state: MockState, out: Path, silent: bool):
+        self.conn = conn
+        self.state = state
+        self.tape_mm = state.tape_mm
         self.out = out
         self.silent = silent
-        self.errors = errors
         self.buf = bytearray()
         self.compress = False
         self.lines: list[bytes] = []
@@ -43,10 +60,20 @@ class Session:
         self.pages: list[dict] = []
         self.log: list[str] = []
 
-    def reply(self, status_type: int = 0x00, phase: int = 0) -> None:
+    def reply(self, status_type: int = 0x00) -> None:
         if self.silent:
             return
-        self.conn.sendall(p.fake_status(self.tape_mm, status_type=status_type, errors=self.errors, phase=phase))
+        self.conn.sendall(self.state.packet(status_type))
+
+    def reply_and_close(self) -> None:
+        try:
+            self.conn.settimeout(2)
+            if self.conn.recv(4096):
+                self.reply(0x02)
+        except OSError:
+            pass
+        finally:
+            self.conn.close()
 
     def need(self, n: int) -> bytes:
         if len(self.buf) < n:
@@ -80,7 +107,8 @@ class Session:
                     self.log.append("status?")
                     self.reply(0x00)
                     return True
-                if sub in (0x61, 0x4D, 0x41, 0x4B):
+                # a = command mode, M = various mode, K = advanced mode, ! = status notification
+                if sub in (0x61, 0x4D, 0x4B, 0x21):
                     v = self.need(4)[3]
                     del b[:4]
                     self.log.append(f"ESC i {chr(sub)} {v:#04x}")
@@ -146,8 +174,10 @@ class Session:
         log.info("page %d: %d lines (%.1f mm) -> %s", len(self.pages), len(self.lines),
                  len(self.lines) * 25.4 / (360 if high_res else 180), path)
         self.lines = []
-        time.sleep(0.2)
-        self.reply(0x06, phase=1)
+        self.state.phase = 1
+        self.reply(0x06)
+        time.sleep(0.8)
+        self.state.phase = 0
         self.reply(0x01)
 
     def run(self) -> None:
@@ -160,7 +190,15 @@ class Session:
                 self.buf += chunk
                 while self.step():
                     pass
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
+            # Like the printer: an unknown command is an error state, not a skipped byte.
+            self.state.errors[1] |= 0x04
+            log.error("ERROR state – %s", exc)
+            try:
+                self.reply(0x02)
+            except OSError:
+                pass
+        except OSError as exc:
             log.error("session ended: %s", exc)
         finally:
             if self.buf:
@@ -168,7 +206,7 @@ class Session:
             self.conn.close()
 
 
-def serve_snmp(host: str, port: int, tape_mm: int, errors: tuple[int, int]) -> None:
+def serve_snmp(host: str, port: int, state: MockState) -> None:
     """Answers the Brother status OID and sysDescr, like the printer's SNMP agent."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host, port))
@@ -182,7 +220,7 @@ def serve_snmp(host: str, port: int, tape_mm: int, errors: tuple[int, int]) -> N
         if community != "public":
             continue
         value = {
-            snmp.BROTHER_STATUS_OID: p.fake_status(tape_mm, errors=errors),
+            snmp.BROTHER_STATUS_OID: state.packet(),
             snmp.SYS_DESCR_OID: b"Brother NC-18002w, Firmware Ver.1.10 (mock)",
         }.get(oid)
         sock.sendto(snmp.get_response(request_id, oid, value, community, version), addr)
@@ -192,8 +230,9 @@ def serve(host: str = "127.0.0.1", port: int = 9100, tape_mm: int = 18, out: str
           silent: bool = False, errors: tuple[int, int] = (0, 0), snmp_port: int | None = None) -> None:
     out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    state = MockState(tape_mm, errors)
     if snmp_port:
-        threading.Thread(target=serve_snmp, args=(host, snmp_port, tape_mm, errors), daemon=True).start()
+        threading.Thread(target=serve_snmp, args=(host, snmp_port, state), daemon=True).start()
     srv = socket.create_server((host, port), reuse_port=False)
     log.info("mock PT-P750W on %s:%d, %d mm tape, pages -> %s%s", host, port, tape_mm, out_dir,
              " (silent)" if silent else "")
@@ -202,7 +241,11 @@ def serve(host: str = "127.0.0.1", port: int = 9100, tape_mm: int = 18, out: str
             conn, addr = srv.accept()
             log.info("connection from %s", addr[0])
             # One at a time, like the printer.
-            Session(conn, tape_mm, out_dir, silent, errors).run()
+            if any(state.errors):
+                # In error the printer takes nothing until it is reset.
+                Session(conn, state, out_dir, silent).reply_and_close()
+                continue
+            Session(conn, state, out_dir, silent).run()
     except KeyboardInterrupt:
         pass
     finally:

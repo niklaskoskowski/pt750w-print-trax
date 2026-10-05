@@ -124,6 +124,14 @@ PI_RECOVER = 0x80
 MODE_AUTO_CUT = 0x40
 MODE_MIRROR = 0x80
 
+# What goes into a page besides the raster:
+#   standard: ESC i M (auto cut), ESC i K (half cut / chain / 360 dpi), ESC i d (margin), M 02
+#   minimal:  ESC i M, M 02 – what ptouch-print sends to a PT-P750W, nothing else
+# Neither sends ESC i A ("cut every n labels") or Z (empty line): both are in
+# the QL/P900 references, not proven on the P750W, and an unknown command
+# makes it read the rest of the job as garbage and go to ERROR.
+PROFILES = ("standard", "minimal")
+
 # Advanced mode settings (ESC i K)
 ADV_HALF_CUT = 0x04
 ADV_NO_CHAIN = 0x08
@@ -208,6 +216,7 @@ class JobOptions:
     high_res: bool = False
     compress: bool = True
     validate_media: bool = False
+    profile: str = "standard"
 
 
 def _print_info(opts: JobOptions, lines: int, page: int, pages: int) -> bytes:
@@ -242,12 +251,14 @@ def _page_settings(opts: JobOptions) -> bytes:
     if opts.high_res:
         adv |= ADV_HIGH_RES
     margin = max(0, min(0xFFFF, int(opts.margin_dots)))
+    compression = COMPRESSION_TIFF if opts.compress else COMPRESSION_NONE
+    if opts.profile == "minimal":
+        return b"\x1b\x69\x4d" + bytes([mode]) + compression
     return b"".join([
         b"\x1b\x69\x4d" + bytes([mode]),
-        b"\x1b\x69\x41\x01",  # cut after every label
         b"\x1b\x69\x4b" + bytes([adv]),
         b"\x1b\x69\x64" + bytes([margin & 0xFF, margin >> 8]),
-        COMPRESSION_TIFF if opts.compress else COMPRESSION_NONE,
+        compression,
     ])
 
 
@@ -257,9 +268,7 @@ def encode_lines(lines: list[bytes], compress: bool = True) -> bytes:
         if len(line) != LINE_BYTES:
             raise ValueError(f"raster line must be {LINE_BYTES} bytes, got {len(line)}")
         if compress:
-            if not any(line):
-                out += ZERO_LINE
-                continue
+            # Empty lines too go out as G (16 zeros pack to 2 bytes), never Z.
             packed = packbits_encode(line)
             out += b"\x47" + bytes([len(packed) & 0xFF, len(packed) >> 8]) + packed
         else:

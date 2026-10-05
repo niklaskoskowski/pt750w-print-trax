@@ -55,6 +55,7 @@ class Config:
     snmp_community: str
     snmp_timeout: float
     snmp_port: int
+    profile: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -81,6 +82,7 @@ class Config:
             snmp_community=os.environ.get("PTB_SNMP_COMMUNITY", "public").strip(),
             snmp_timeout=max(0.2, _float("PTB_SNMP_TIMEOUT", 1.5)),
             snmp_port=_int("PTB_SNMP_PORT", 161),
+            profile=_env("PTB_PROFILE", "standard").lower(),
         )
 
     def ensure_token(self) -> str:

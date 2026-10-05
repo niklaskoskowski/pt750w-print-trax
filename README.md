@@ -132,6 +132,7 @@ Optionen (JSON-Felder bzw. Query-Parameter, alle optional):
 | `tapeMm` | erwartetes Tape; weicht das geladene ab → `409 TAPE_MISMATCH` | – |
 | `threshold`, `dither`, `invert` | Schwarzweiß-Umsetzung | 128, aus, aus |
 | `highRes` | 180 × 360 dpi | aus |
+| `profile` | `standard` · `minimal` (nur Auto-Cut, kein Halbschnitt/Rand – Fallback falls der Drucker auf ERROR geht) | `PTB_PROFILE` |
 | `jobName`, `source` | Anzeige im Verlauf | – |
 | `dryRun` | nur rendern | aus |
 
@@ -167,6 +168,7 @@ python3 -m ptbridge status
 python3 -m ptbridge probe                       # Status roh über Port 9100 und SNMP (Diagnose)
 python3 -m ptbridge print label.png --width-mm 30 --height-mm 14 --copies 2
 python3 -m ptbridge text "Kabel 12\nXLR 10 m" --cut half
+python3 -m ptbridge text "Test" --profile minimal   # minimaler Befehlssatz
 python3 -m ptbridge token                       # API-Token anzeigen
 python3 -m ptbridge dump label.png -o job.bin --tape 18   # Rohdaten, dann: nc <drucker> 9100 < job.bin
 ```
@@ -205,6 +207,7 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 | `OFFLINE … did not answer` | Drucker aus / Auto-Power-Off / andere IP. `nc -vz <ip> 9100` vom Pi. |
 | `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
 | `state: sent`, `tapeSource: default` | Kein Status, weder Port 9100 noch SNMP. `docker compose exec bridge python3 -m ptbridge probe` zeigt beide Wege roh. SNMP im Drucker aktivieren (Web-Konfiguration / Printer Setting Tool) oder `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen bzw. in inventory *Expected tape* wählen. |
+| Drucker geht nach dem Job auf ERROR | Drucker aus/an. Dann `--profile minimal` testen; klappt das, `PTB_PROFILE=minimal` in `.env`. Die Bridge meldet den Fehler per SNMP (`Printer went into error after the job: …`). |
 | `state: sent`, `tapeSource: printer` | Normal bei Status per SNMP: Tape erkannt, nur die Druckbestätigung fehlt. |
 | `TAPE_MISMATCH` | inventory erwartet ein anderes Tape (Settings → Printer → *Expected tape*). |
 | Etikett zu klein | 12-mm-Tape eingelegt – Inventory-Labels brauchen 18/24 mm für 1:1. |
@@ -215,7 +218,10 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 
 Brother *Raster Command Reference PT-E550W/P750W/P710BT*: Invalidate (100 × `00`) → `ESC @` →
 `ESC i S` (Status, 32 Byte) → `ESC i a 01` (Raster) → je Seite `ESC i z` (Print-Info), `ESC i M`
-(Auto-Cut), `ESC i A 01`, `ESC i K` (Halbschnitt / Kettendruck / 360 dpi), `ESC i d` (Rand),
-`M 02` (TIFF/PackBits), Rasterzeilen `G nn nn …` bzw. `Z` (leer), `FF` zwischen Seiten, `Ctrl-Z` am
-Ende. Eine Rasterzeile = 16 Byte = 128 Pins quer zum Tape, Bit 7 von Byte 0 = Pin 0; das Tape liegt
+(Auto-Cut), `ESC i K` (Halbschnitt / Kettendruck / 360 dpi), `ESC i d` (Rand), `M 02`
+(TIFF/PackBits), Rasterzeilen `G nn nn …` (auch leere), `FF` zwischen Seiten, `Ctrl-Z` am Ende.
+Profil `minimal` lässt `ESC i K` und `ESC i d` weg – exakt das, was ptouch-print an den P750W
+schickt. **Nicht** gesendet werden `ESC i A` und `Z`: nicht im P750W-Befehlssatz, ein unbekannter
+Befehl schickt den Drucker sofort in ERROR. Status zusätzlich per SNMP
+(`1.3.6.1.4.1.2435.3.3.9.1.6.1.0`, gleiches 32-Byte-Paket). Eine Rasterzeile = 16 Byte = 128 Pins quer zum Tape, Bit 7 von Byte 0 = Pin 0; das Tape liegt
 symmetrisch in der Mitte des Kopfes. Code: `ptbridge/protocol.py`, `ptbridge/raster.py`.

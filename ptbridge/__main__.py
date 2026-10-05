@@ -32,6 +32,8 @@ def _job_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--margin-mm", type=float)
     parser.add_argument("--tape", type=float, help="expected tape width in mm")
     parser.add_argument("--high-res", action="store_true")
+    parser.add_argument("--profile", choices=("standard", "minimal"),
+                        help="command set: standard (cut/half cut/margin) or minimal (ptouch-print)")
     parser.add_argument("--dry-run", action="store_true", help="render only, do not print")
     parser.add_argument("--preview", help="write the rendered raster to this PNG")
 
@@ -45,6 +47,7 @@ def _params(args, extra: dict) -> dict:
         "marginMm": args.margin_mm,
         "tapeMm": args.tape,
         "highRes": "1" if args.high_res else None,
+        "profile": args.profile,
         "dryRun": "1" if args.dry_run else None,
         "source": "cli",
     })
