@@ -139,6 +139,23 @@ PROFILES = ("standard", "minimal", "compat", "plain", "ptouch")
 # Only these send ESC i K, which switches 180 x 360 dpi on. Anything else
 # must stay at 180 dpi, or the doubled raster prints the label twice as long.
 HIGH_RES_PROFILES = ("standard", "compat")
+
+# How a job of several pages (batch, copies) carries the page settings. The
+# printer only shows the difference: one half-cut strip, or every label
+# ejected and cut with its own leader. `python -m ptbridge batchtest` tries them.
+#   once:      ESC i M/K/d + M before the first page only; then ESC i z + raster + FF
+#   chain:     like once, with chain printing on – Ctrl-Z at the end feeds and cuts
+#   perpage:   settings on every page, chain printing on for all but the last
+#   noautocut: like once, auto cut off – half cuts only, the end via Ctrl-Z
+#   legacy:    settings on every page, chain printing off on every page (≤ 1.0 behaviour)
+BATCH_MODES = ("once", "chain", "perpage", "noautocut", "legacy")
+BATCH_MODE_LABELS = {
+    "once": "cut/half cut/margin once at the start, then only page data",
+    "chain": "settings once, chain printing on – fed and cut by the final Ctrl-Z",
+    "perpage": "settings on every page, chain printing on until the last page",
+    "noautocut": "settings once, auto cut off – half cuts only",
+    "legacy": "settings and 'no chain' on every page (old behaviour)",
+}
 PROFILE_LABELS = {
     "standard": "ESC i z + cut/half cut/margin, TIFF-compressed (rejected by a PT-P750W over Wi-Fi)",
     "minimal": "ESC i z + auto cut, TIFF-compressed",
@@ -232,6 +249,7 @@ class JobOptions:
     compress: bool = True
     validate_media: bool = False
     profile: str = "compat"
+    batch_mode: str = "once"
 
 
 def _print_info(opts: JobOptions, lines: int, page: int, pages: int) -> bytes:
@@ -256,12 +274,14 @@ def _print_info(opts: JobOptions, lines: int, page: int, pages: int) -> bytes:
     ])
 
 
-def _page_settings(opts: JobOptions) -> bytes:
-    mode = MODE_AUTO_CUT if opts.auto_cut else 0
+def _page_settings(opts: JobOptions, *, chain: bool | None = None, auto_cut: bool | None = None) -> bytes:
+    chain = opts.chain if chain is None else chain
+    auto_cut = opts.auto_cut if auto_cut is None else auto_cut
+    mode = MODE_AUTO_CUT if auto_cut else 0
     adv = 0
     if opts.half_cut:
         adv |= ADV_HALF_CUT
-    if not opts.chain:
+    if not chain:
         adv |= ADV_NO_CHAIN
     margin = max(0, min(0xFFFF, int(opts.margin_dots)))
     if opts.high_res:
@@ -335,10 +355,22 @@ def build_pages(pages: list[list[bytes]], opts: JobOptions, *, preamble: bool = 
         out += COMPRESSION_TIFF
     out += RASTER_MODE
     encoded: dict[int, bytes] = {}
+    batch = opts.batch_mode if opts.batch_mode in BATCH_MODES else "once"
     for index, lines in enumerate(pages):
+        last = index == len(pages) - 1
         if opts.profile not in ("plain", "ptouch"):
             out += _print_info(opts, len(lines), index, len(pages))
-        out += _page_settings(opts)
+        if batch == "legacy":
+            out += _page_settings(opts)
+        elif batch == "perpage":
+            out += _page_settings(opts, chain=opts.chain if last else True)
+        elif index == 0:
+            if batch == "chain":
+                out += _page_settings(opts, chain=True)
+            elif batch == "noautocut":
+                out += _page_settings(opts, auto_cut=False)
+            else:
+                out += _page_settings(opts)
         key = id(lines)
         if key not in encoded:  # copies share their encoding
             encoded[key] = encode_lines(lines, mode)

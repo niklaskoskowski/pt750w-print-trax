@@ -58,6 +58,7 @@ class Config:
     profile: str
     close_wait: float
     high_res: bool
+    batch_mode: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -90,6 +91,8 @@ class Config:
             close_wait=max(1.0, _float("PTB_CLOSE_WAIT", 15.0)),
             # 180 x 360 dpi: twice the resolution along the tape. Default on.
             high_res=_bool("PTB_HIGH_RES", True),
+            # How multi-page jobs carry their settings – see protocol.BATCH_MODES.
+            batch_mode=_env("PTB_BATCH_MODE", "once").lower(),
         )
 
     def ensure_token(self) -> str:

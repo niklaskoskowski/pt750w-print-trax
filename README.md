@@ -209,6 +209,26 @@ docker compose exec bridge python3 -m ptbridge selftest
 
 Halbschnitt, Kettendruck und eigener Rand wirken nur bei `standard` und `compat`.
 
+## Batch: ein Streifen statt einzelner Etiketten
+
+Ein Batch ist ein Job mit einer Seite pro Etikett. Ob der Drucker daraus **einen** Streifen macht
+(Halbschnitt zwischen den Etiketten, ein Vollschnitt am Ende) oder jedes Etikett mit eigenem Vorlauf
+auswirft, hängt davon ab, wie die Schnitt-/Kettendruck-Einstellungen im Job stehen. Standard
+`PTB_BATCH_MODE=once`: Einstellungen einmal am Anfang, danach pro Seite nur Print-Info, Raster, `FF`.
+Klappt das nicht:
+
+```bash
+docker compose exec bridge python3 -m ptbridge batchtest
+```
+
+| Modus | Inhalt |
+|---|---|
+| `once` | **Standard.** `ESC i M/K/d` + `M` nur vor der ersten Seite |
+| `chain` | wie `once`, Kettendruck an – Vorschub + Schnitt durch das abschließende `Ctrl-Z` |
+| `perpage` | Einstellungen auf jeder Seite, Kettendruck an bis zur letzten |
+| `noautocut` | wie `once`, Auto-Cut aus – nur Halbschnitte |
+| `legacy` | Einstellungen + „kein Kettendruck“ auf jeder Seite (bis 1.0: jedes Etikett einzeln geschnitten) |
+
 ## Ohne Drucker testen
 
 Ein Mock-Drucker beantwortet Statusabfragen und schreibt jede empfangene Seite als PNG – dekodiert

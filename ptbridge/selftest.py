@@ -13,7 +13,10 @@ from __future__ import annotations
 import json
 import time
 
+import io
+
 from . import protocol as p
+from .raster import text_image
 from .service import ApiError, Bridge, JobParams
 
 ORDER = ("compat", "plain", "ptouch", "minimal", "standard")
@@ -82,3 +85,59 @@ def run(bridge: Bridge, start: str | None = None) -> int:
     print("\nSummary (also in data/selftest.json):")
     print(summary)
     return 0 if results and results[-1]["printed"] else 1
+
+
+BATCH_ORDER = ("once", "chain", "perpage", "noautocut")
+
+
+def run_batch(bridge: Bridge, start: str | None = None) -> int:
+    """
+    python -m ptbridge batchtest – find how this printer wants a multi-page
+    job, so a batch comes out as ONE half-cut strip instead of every label
+    ejected and cut with its own leader.
+    """
+    order = list(BATCH_ORDER)
+    if start in order:
+        order = order[order.index(start):]
+    results = []
+    print("Batch test: three short labels per variant, as one job with half cuts. Watch the printer.\n")
+    for letter, mode in zip("ABCD", order):
+        print(f"[{letter}] {mode}: {p.BATCH_MODE_LABELS[mode]}")
+        st = _wait_ready(bridge)
+        tape = (st or {}).get("tapeMm") or bridge.cfg.default_tape_mm
+        batch_id = bridge.batches.create()
+        for i in range(3):
+            buf = io.BytesIO()
+            text_image(f"{letter}{i + 1}", tape).save(buf, "PNG")
+            bridge.batches.add(batch_id, i, buf.getvalue(), None, None, f"{letter}{i + 1}")
+        params = JobParams({"cut": "half", "batchMode": mode, "jobName": f"batchtest {letter} {mode}",
+                            "source": "batchtest"}, bridge.cfg)
+        entry = {"batchMode": mode}
+        try:
+            job = bridge.print_batch(batch_id, params, "along")["job"]
+            entry.update(state=job["state"], after=job.get("statusAfter"))
+            print(f"  sent 3 labels as one job ({job['tapeLabel']}, strip ~{job['stripMm']} mm)")
+        except ApiError as exc:
+            bridge.batches.delete(batch_id)
+            entry.update(state="error", error=exc.message)
+            print(f"  bridge: {exc.message}")
+        answer = _ask(f"  Did {letter}1 {letter}2 {letter}3 come out as ONE strip – half cuts between them, "
+                      "cut once at the end? [y/n] ")
+        entry["strip"] = answer.startswith(("y", "j"))
+        results.append(entry)
+        if entry["strip"]:
+            print(f"\n=> Batches work with '{mode}'. Put this in .env and restart:\n"
+                  f"   PTB_BATCH_MODE={mode}\n   docker compose up -d")
+            break
+        print()
+    else:
+        print("=> No variant gave one strip. Send the summary below, and a photo of what came out.")
+
+    summary = json.dumps(results, indent=1, ensure_ascii=False)
+    try:
+        (bridge.cfg.data_dir / "batchtest.json").write_text(summary, encoding="utf-8")
+    except OSError:
+        pass
+    print("\nSummary (also in data/batchtest.json):")
+    print(summary)
+    return 0 if results and results[-1]["strip"] else 1

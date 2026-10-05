@@ -4,6 +4,7 @@ python -m ptbridge status                  ask the printer
 python -m ptbridge probe                   raw status over TCP 9100 and SNMP (diagnostics)
 python -m ptbridge watch [SECONDS]         print every change of the SNMP status (diagnostics)
 python -m ptbridge selftest                find the command set the printer accepts (interactive)
+python -m ptbridge batchtest               find how batches become one half-cut strip (interactive)
 python -m ptbridge print FILE [options]    print an image
 python -m ptbridge text "TEXT" [options]   print a text label
 python -m ptbridge dump FILE -o job.bin    raw printer bytes, e.g. for: nc <printer> 9100 < job.bin
@@ -72,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("probe", help="raw status over TCP 9100 and SNMP, for diagnostics")
     st = sub.add_parser("selftest", help="find the command set the printer accepts (interactive)")
     st.add_argument("--start", help="profile to start with")
+    bt = sub.add_parser("batchtest", help="find how batches become one half-cut strip (interactive)")
+    bt.add_argument("--start", help="batch mode to start with")
     wt = sub.add_parser("watch", help="print every change of the SNMP status")
     wt.add_argument("seconds", nargs="?", type=float, default=60)
     sub.add_parser("token", help="print the API token")
@@ -156,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
         elif cmd == "selftest":
             from .selftest import run as selftest
             return selftest(bridge, args.start)
+        elif cmd == "batchtest":
+            from .selftest import run_batch
+            return run_batch(bridge, args.start)
         elif cmd == "watch":
             print(f"watching SNMP status for {args.seconds:g}s – print something now (Ctrl-C to stop)")
             try:

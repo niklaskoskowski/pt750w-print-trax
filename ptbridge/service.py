@@ -101,6 +101,8 @@ class JobParams:
         self.profile = _choice(src, "profile", p.PROFILES, default_profile)
         if self.profile not in p.HIGH_RES_PROFILES:
             self.render.high_res = False
+        default_batch = cfg.batch_mode if cfg.batch_mode in p.BATCH_MODES else "once"
+        self.batch_mode = _choice(src, "batchMode", p.BATCH_MODES, default_batch)
 
     def job_options(self, tape_mm: int, media_type: int) -> p.JobOptions:
         return p.JobOptions(
@@ -113,6 +115,7 @@ class JobParams:
             margin_dots=p.mm_to_dots(self.margin_mm),
             high_res=self.render.high_res,
             profile=self.profile,
+            batch_mode=self.batch_mode,
         )
 
 
@@ -380,6 +383,7 @@ class Bridge:
             "rotated": rendered.rotated,
             "cut": params.cut,
             "highRes": rendered.high_res,
+            "batchMode": params.batch_mode,
             "warnings": warnings + ([] if result is None else result.notes),
             "pagesConfirmed": 0 if result is None else result.pages_confirmed,
             "durationMs": int((time.monotonic() - started) * 1000),

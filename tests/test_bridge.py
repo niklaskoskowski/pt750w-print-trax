@@ -281,7 +281,12 @@ class Batch(MockBase):
         self.assertEqual(len(list(out.glob("*.png"))), 3)   # three pages …
         self.assertEqual(len(bridge.jobs.list()), 1)        # … one job
         job_bytes = (Path(bridge.cfg.data_dir) / "last-job.bin").read_bytes()
-        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b\x4c"), 3)  # half cut, no chain, 360 dpi on every page
+        # Default batch mode "once": half cut + no chain + 360 dpi once, up front …
+        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b"), 1)
+        self.assertIn(b"\x1b\x69\x4b\x4c", job_bytes)
+        self.assertEqual(job_bytes.count(b"\x1b\x69\x4d"), 1)
+        # … and every page still has its own print information.
+        self.assertEqual(job_bytes.count(b"\x1b\x69\x7a"), 3)
         self.assertEqual(job_bytes.count(b"\x0c\x1b\x69\x7a"), 2)   # FF, then the next page
         self.assertTrue(job_bytes.endswith(b"\x1a"))
         with self.assertRaises(ApiError):                        # printed batches are gone
@@ -329,3 +334,19 @@ class HighRes(MockBase):
         bridge, _ = self.bridge(12, silent=True, snmp_on=True)
         params = JobParams({"profile": "minimal", "highRes": "1"}, bridge.cfg)
         self.assertFalse(params.render.high_res)
+
+
+class BatchModes(unittest.TestCase):
+    def test_modes(self):
+        pages = [[b"\xff" * 16]] * 3
+        def job(mode):
+            return p.build_pages(pages, p.JobOptions(tape_mm=12, half_cut=True, batch_mode=mode), preamble=False)
+        self.assertEqual(job("once").count(b"\x1b\x69\x4b\x0c"), 1)
+        self.assertEqual(job("chain").count(b"\x1b\x69\x4b\x04"), 1)          # chain printing on
+        self.assertEqual(job("perpage").count(b"\x1b\x69\x4b\x04"), 2)        # chained …
+        self.assertEqual(job("perpage").count(b"\x1b\x69\x4b\x0c"), 1)        # … until the last
+        self.assertIn(b"\x1b\x69\x4d\x00", job("noautocut"))
+        self.assertEqual(job("legacy").count(b"\x1b\x69\x4b\x0c"), 3)
+        for mode in p.BATCH_MODES:
+            self.assertEqual(job(mode).count(b"\x1b\x69\x7a"), 3, mode)
+            self.assertTrue(job(mode).endswith(b"\x1a"), mode)
