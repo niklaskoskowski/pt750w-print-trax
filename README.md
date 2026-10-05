@@ -132,7 +132,7 @@ Optionen (JSON-Felder bzw. Query-Parameter, alle optional):
 | `tapeMm` | erwartetes Tape; weicht das geladene ab → `409 TAPE_MISMATCH` | – |
 | `threshold`, `dither`, `invert` | Schwarzweiß-Umsetzung | 128, aus, aus |
 | `highRes` | 180 × 360 dpi | aus |
-| `profile` | `standard` · `minimal` (nur Auto-Cut, kein Halbschnitt/Rand – Fallback falls der Drucker auf ERROR geht) | `PTB_PROFILE` |
+| `profile` | Befehlssatz: `standard` · `minimal` · `compat` · `plain` · `ptouch` – siehe *Befehlssatz finden* | `PTB_PROFILE` |
 | `jobName`, `source` | Anzeige im Verlauf | – |
 | `dryRun` | nur rendern | aus |
 
@@ -174,6 +174,27 @@ python3 -m ptbridge token                       # API-Token anzeigen
 python3 -m ptbridge dump label.png -o job.bin --tape 18   # Rohdaten, dann: nc <drucker> 9100 < job.bin
 ```
 
+## Befehlssatz finden (Drucker geht auf ERROR)
+
+Der PT-P750W quittiert einen Job, den er nicht mag, nur mit blinkender orange/roter Lampe – ohne
+Grund. Der Selbsttest druckt pro Befehlssatz ein kurzes Etikett, fragt, ob es herauskam, wartet bei
+einem Fehler, bis der Drucker aus- und wieder eingeschaltet ist, und nennt am Ende das passende
+`PTB_PROFILE`:
+
+```bash
+docker compose exec bridge python3 -m ptbridge selftest
+```
+
+| Profil | Inhalt |
+|---|---|
+| `compat` | `ESC i z` mit Medienprüfung, Auto-Cut/Kettendruck/Rand, unkomprimiert |
+| `plain` | nur Raster-Modus + Auto-Cut, keine Print-Information, unkomprimiert |
+| `ptouch` | byte-genau wie ptouch-print an den P750W (`M 02`, `ESC i a 01`, PackBits als ein Literal) |
+| `minimal` | `ESC i z` + Auto-Cut, TIFF/PackBits |
+| `standard` | `ESC i z` + Auto-Cut/Halbschnitt/Kettendruck/Rand, TIFF/PackBits |
+
+Halbschnitt, Kettendruck und eigener Rand wirken nur bei `standard` und `compat`.
+
 ## Ohne Drucker testen
 
 Ein Mock-Drucker beantwortet Statusabfragen und schreibt jede empfangene Seite als PNG – dekodiert
@@ -209,7 +230,7 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 | `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
 | `state: sent`, `tapeSource: default` | Kein Status, weder Port 9100 noch SNMP. `docker compose exec bridge python3 -m ptbridge probe` zeigt beide Wege roh. SNMP im Drucker aktivieren (Web-Konfiguration / Printer Setting Tool) oder `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen bzw. in inventory *Expected tape* wählen. |
 | Fehlersuche Protokoll | `watch 60` in einem Terminal, im anderen drucken (Bridge oder Brother-App) – zeigt das Statuspaket roh. Der letzte Job liegt als `data/last-job.bin`, Job-Output enthält `statusBefore`/`statusAfter`. |
-| Drucker geht nach dem Job auf ERROR | Drucker aus/an. Dann `--profile minimal` testen; klappt das, `PTB_PROFILE=minimal` in `.env`. Die Bridge meldet den Fehler per SNMP (`Printer went into error after the job: …`). |
+| Drucker geht nach dem Job auf ERROR | Drucker aus/an, dann `selftest` (siehe *Befehlssatz finden*). Steht der Drucker noch im Fehler, lehnt die Bridge den nächsten Job ab (`still in an error state`). |
 | `state: sent`, `tapeSource: printer` | Normal bei Status per SNMP: Tape erkannt, nur die Druckbestätigung fehlt. |
 | `TAPE_MISMATCH` | inventory erwartet ein anderes Tape (Settings → Printer → *Expected tape*). |
 | Etikett zu klein | 12-mm-Tape eingelegt – Inventory-Labels brauchen 18/24 mm für 1:1. |

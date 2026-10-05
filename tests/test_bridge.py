@@ -168,6 +168,17 @@ class EndToEnd(MockBase):
             bridge.print_text("x", JobParams({"tapeMm": 18}, bridge.cfg))
         self.assertEqual(ctx.exception.code, "TAPE_MISMATCH")
 
+    def test_every_profile_prints_the_same_raster(self):
+        bridge, out = self.bridge(12, silent=True, snmp_on=True)
+        for profile in p.PROFILES:
+            bridge.print_text("Same", JobParams({"profile": profile}, bridge.cfg))
+        time.sleep(0.3)
+        pages = sorted(out.glob("*.png"), key=os.path.getmtime)
+        self.assertEqual(len(pages), len(p.PROFILES))
+        first = Image.open(pages[0]).tobytes()
+        for page in pages[1:]:
+            self.assertEqual(Image.open(page).tobytes(), first, page.name)
+
     def test_tcp_status_used_without_snmp(self):
         bridge, _ = self.bridge(18)
         res = bridge.print_text("x", JobParams({}, bridge.cfg))

@@ -124,13 +124,23 @@ PI_RECOVER = 0x80
 MODE_AUTO_CUT = 0x40
 MODE_MIRROR = 0x80
 
-# What goes into a page besides the raster:
-#   standard: ESC i M (auto cut), ESC i K (half cut / chain / 360 dpi), ESC i d (margin), M 02
-#   minimal:  ESC i M, M 02 – what ptouch-print sends to a PT-P750W, nothing else
-# Neither sends ESC i A ("cut every n labels") or Z (empty line): both are in
-# the QL/P900 references, not proven on the P750W, and an unknown command
-# makes it read the rest of the job as garbage and go to ERROR.
-PROFILES = ("standard", "minimal")
+# Command-set profiles. The printer only says "error" when it dislikes a job,
+# so these are the variants `python -m ptbridge selftest` walks through:
+#   standard: ESC i z, ESC i M (auto cut), ESC i K (half cut/chain/360 dpi), ESC i d (margin), TIFF
+#   minimal:  ESC i z, ESC i M, TIFF
+#   compat:   ESC i z with media check (kind + width valid), ESC i M/K/d, uncompressed
+#   plain:    ESC i M, uncompressed – no print information at all
+#   ptouch:   byte for byte what ptouch-print sends a P750W: M 02, ESC i a 01, lines as one literal run
+# None sends ESC i A ("cut every n labels") or Z (empty line): both are in
+# the QL/P900 references, not proven on the P750W.
+PROFILES = ("standard", "minimal", "compat", "plain", "ptouch")
+PROFILE_LABELS = {
+    "standard": "ESC i z + cut/half cut/margin, TIFF-compressed",
+    "minimal": "ESC i z + auto cut, TIFF-compressed",
+    "compat": "ESC i z with media check + cut/margin, uncompressed",
+    "plain": "auto cut only, no print information, uncompressed",
+    "ptouch": "exactly like ptouch-print: M 02, ESC i a 01, literal PackBits",
+}
 
 # Advanced mode settings (ESC i K)
 ADV_HALF_CUT = 0x04
@@ -221,8 +231,8 @@ class JobOptions:
 
 def _print_info(opts: JobOptions, lines: int, page: int, pages: int) -> bytes:
     flags = PI_RECOVER | PI_QUALITY
-    if opts.validate_media:
-        flags |= PI_KIND | PI_WIDTH
+    if opts.validate_media or opts.profile == "compat":
+        flags = PI_RECOVER | PI_KIND | PI_WIDTH
     if pages == 1 or page == 0:
         n9 = 0
     elif page == pages - 1:
@@ -251,8 +261,10 @@ def _page_settings(opts: JobOptions) -> bytes:
     if opts.high_res:
         adv |= ADV_HIGH_RES
     margin = max(0, min(0xFFFF, int(opts.margin_dots)))
-    compression = COMPRESSION_TIFF if opts.compress else COMPRESSION_NONE
-    if opts.profile == "minimal":
+    compression = COMPRESSION_TIFF if _line_mode(opts) == "tiff" else COMPRESSION_NONE
+    if opts.profile == "ptouch":
+        return b""  # compression went out once, before raster mode
+    if opts.profile in ("minimal", "plain"):
         return b"\x1b\x69\x4d" + bytes([mode]) + compression
     return b"".join([
         b"\x1b\x69\x4d" + bytes([mode]),
@@ -262,17 +274,29 @@ def _page_settings(opts: JobOptions) -> bytes:
     ])
 
 
-def encode_lines(lines: list[bytes], compress: bool = True) -> bytes:
+def _line_mode(opts: JobOptions) -> str:
+    """tiff (real PackBits), literal (PackBits, one literal run – ptouch-print) or none."""
+    if opts.profile == "ptouch":
+        return "literal"
+    if opts.profile in ("compat", "plain") or not opts.compress:
+        return "none"
+    return "tiff"
+
+
+def encode_lines(lines: list[bytes], compress: bool | str = True) -> bytes:
+    mode = compress if isinstance(compress, str) else ("tiff" if compress else "none")
     out = bytearray()
     for line in lines:
         if len(line) != LINE_BYTES:
             raise ValueError(f"raster line must be {LINE_BYTES} bytes, got {len(line)}")
-        if compress:
+        if mode == "tiff":
             # Empty lines too go out as G (16 zeros pack to 2 bytes), never Z.
             packed = packbits_encode(line)
-            out += b"\x47" + bytes([len(packed) & 0xFF, len(packed) >> 8]) + packed
+        elif mode == "literal":
+            packed = bytes([LINE_BYTES - 1]) + line
         else:
-            out += b"\x47" + bytes([LINE_BYTES, 0]) + line
+            packed = line
+        out += b"\x47" + bytes([len(packed) & 0xFF, len(packed) >> 8]) + packed
     return bytes(out)
 
 
@@ -286,13 +310,16 @@ def build_job(lines: list[bytes], opts: JobOptions, *, preamble: bool = True) ->
     if not lines:
         raise ValueError("nothing to print")
     pages = max(1, int(opts.copies))
-    body = encode_lines(lines, opts.compress)
+    body = encode_lines(lines, _line_mode(opts))
     out = bytearray()
     if preamble:
         out += INVALIDATE + INITIALIZE
+    if opts.profile == "ptouch":
+        out += COMPRESSION_TIFF
     out += RASTER_MODE
     for page in range(pages):
-        out += _print_info(opts, len(lines), page, pages)
+        if opts.profile not in ("plain", "ptouch"):
+            out += _print_info(opts, len(lines), page, pages)
         out += _page_settings(opts)
         out += body
         out += PRINT_FEED if page == pages - 1 else PRINT

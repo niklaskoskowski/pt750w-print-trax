@@ -206,33 +206,47 @@ class Printer:
     def run(self, build: Callable[[dict | None], tuple[bytes, int]]) -> JobResult:
         """
         build(status) -> (job bytes without preamble, page count). Called with
-        the connection open and the status (or None) already read, so the
-        caller can size the label for the tape that is actually loaded.
+        the status (or None) already read, so the caller can size the label
+        for the tape that is actually loaded – before the connection opens
+        when SNMP answered, on the open connection otherwise.
         """
         self._acquire()
         started = time.monotonic()
         try:
-            snmp_status = self._snmp_status()
+            # SNMP first: then the whole job is ready before the connection
+            # opens and goes out in one write – no request the printer leaves
+            # unanswered, no gap between preamble and raster.
+            before = self._snmp_status()
+            via = "snmp" if before is not None else None
+            job = b""
+            pages = 1
+            if before is not None:
+                self._precheck(before)
+                job, pages = build(before)
             sock = self._connect()
             try:
-                before = self._query(sock, snmp_status)
-                if before and before["errors"]:
-                    raise PrinterError("PRINTER_ERROR", "Printer reports: " + ", ".join(before["errors"]),
-                                       409, before)
-                if before and before["mediaType"] == 0x00:
-                    raise PrinterError("NO_MEDIA", "No tape cassette loaded.", 409, before)
-                if before and before["mediaType"] == 0xFF:
-                    raise PrinterError("PRINTER_ERROR", "Incompatible tape cassette.", 409, before)
-
-                job, pages = build(before)
+                if before is not None:
+                    payload = p.INVALIDATE + p.INITIALIZE + job
+                else:
+                    sock.sendall(p.INVALIDATE + p.INITIALIZE)
+                    if self.tcp_status is not False:
+                        before = self._tcp_status(sock)
+                        via = "tcp" if before is not None else None
+                    if before is not None:
+                        self._precheck(before)
+                    job, pages = build(before)
+                    payload = job
+                self.status_supported = before is not None
+                self.status_via = via
+                self._remember(before)
                 try:
                     sock.settimeout(max(10.0, self.wait_timeout))
-                    sock.sendall(job)
+                    sock.sendall(payload)
                 except OSError as exc:
                     raise PrinterError("SEND_FAILED", f"Connection dropped while sending: {exc}") from exc
 
-                result = JobResult(state="sent", status_before=before, status_after=None, bytes_sent=len(job))
-                tcp_confirmed = before is not None and self.status_via == "tcp"
+                result = JobResult(state="sent", status_before=before, status_after=None, bytes_sent=len(payload))
+                tcp_confirmed = via == "tcp"
                 if tcp_confirmed:
                     self._await(sock, pages, result)
             finally:
@@ -254,6 +268,18 @@ class Printer:
             raise
         finally:
             self.lock.release()
+
+    @staticmethod
+    def _precheck(status: dict) -> None:
+        if status["errors"]:
+            raise PrinterError("PRINTER_ERROR", "Printer reports: " + ", ".join(status["errors"]), 409, status)
+        if status["statusType"] == 0x02:
+            raise PrinterError("PRINTER_ERROR", "Printer is still in an error state from the last job – "
+                               "switch it off and on again.", 409, status)
+        if status["mediaType"] == 0x00:
+            raise PrinterError("NO_MEDIA", "No tape cassette loaded.", 409, status)
+        if status["mediaType"] == 0xFF:
+            raise PrinterError("PRINTER_ERROR", "Incompatible tape cassette.", 409, status)
 
     def _watch_snmp(self, pages: int, result: JobResult) -> bool:
         """

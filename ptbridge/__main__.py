@@ -3,6 +3,7 @@ python -m ptbridge [serve]                 HTTP bridge (default)
 python -m ptbridge status                  ask the printer
 python -m ptbridge probe                   raw status over TCP 9100 and SNMP (diagnostics)
 python -m ptbridge watch [SECONDS]         print every change of the SNMP status (diagnostics)
+python -m ptbridge selftest                find the command set the printer accepts (interactive)
 python -m ptbridge print FILE [options]    print an image
 python -m ptbridge text "TEXT" [options]   print a text label
 python -m ptbridge dump FILE -o job.bin    raw printer bytes, e.g. for: nc <printer> 9100 < job.bin
@@ -33,8 +34,7 @@ def _job_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--margin-mm", type=float)
     parser.add_argument("--tape", type=float, help="expected tape width in mm")
     parser.add_argument("--high-res", action="store_true")
-    parser.add_argument("--profile", choices=("standard", "minimal"),
-                        help="command set: standard (cut/half cut/margin) or minimal (ptouch-print)")
+    parser.add_argument("--profile", choices=p.PROFILES, help="command set, see `selftest`")
     parser.add_argument("--dry-run", action="store_true", help="render only, do not print")
     parser.add_argument("--preview", help="write the rendered raster to this PNG")
 
@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the HTTP bridge (default)")
     sub.add_parser("status", help="query the printer")
     sub.add_parser("probe", help="raw status over TCP 9100 and SNMP, for diagnostics")
+    st = sub.add_parser("selftest", help="find the command set the printer accepts (interactive)")
+    st.add_argument("--start", help="profile to start with")
     wt = sub.add_parser("watch", help="print every change of the SNMP status")
     wt.add_argument("seconds", nargs="?", type=float, default=60)
     sub.add_parser("token", help="print the API token")
@@ -150,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(bridge.status(), indent=2, ensure_ascii=False))
         elif cmd == "probe":
             print(json.dumps(bridge.printer.probe(), indent=2, ensure_ascii=False))
+        elif cmd == "selftest":
+            from .selftest import run as selftest
+            return selftest(bridge, args.start)
         elif cmd == "watch":
             print(f"watching SNMP status for {args.seconds:g}s – print something now (Ctrl-C to stop)")
             try:
