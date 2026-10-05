@@ -2,12 +2,13 @@
 A fake PT-P750W on TCP 9100, for testing without the printer.
 
 It answers status requests, decodes every page it receives exactly as the
-printer would read it and writes it to <out>/<time>-p<n>.png, then reports
+printer would read it and writes it to <out>/<time>-<n>.png, then reports
 "printing completed". --silent emulates a printer that never answers.
 """
 
 from __future__ import annotations
 
+import itertools
 import logging
 import socket
 import threading
@@ -22,6 +23,9 @@ log = logging.getLogger("ptbridge.mock")
 
 class Incomplete(Exception):
     pass
+
+
+_page_counter = itertools.count(1)
 
 
 class Session:
@@ -127,7 +131,7 @@ class Session:
         if z.get("lines") is not None and z["lines"] != len(self.lines):
             log.error("page announces %d lines, received %d", z["lines"], len(self.lines))
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = self.out / f"{stamp}-p{len(self.pages) + 1}.png"
+        path = self.out / f"{stamp}-{next(_page_counter):04d}.png"
         high_res = bool(self.info.get("K", 0) & p.ADV_HIGH_RES)
         path.write_bytes(preview_png(self.lines, self.tape_mm, high_res))
         page = {
