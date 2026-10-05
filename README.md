@@ -1,0 +1,217 @@
+# pt750w-print-trax
+
+Netzwerk-Druckbrücke für den **Brother PT-P750W**. Läuft auf einem Raspberry Pi im selben WLAN wie
+der Drucker, nimmt Druckaufträge per HTTPS-API entgegen (erreichbar z. B. über Cloudflare Tunnel)
+und schickt sie als Brother-Raster direkt an den Drucker (raw TCP, Port 9100).
+
+Gedacht als Gegenstück zum Label-Druck in **inventory-management** (Settings → Printer), aber
+generisch: jedes PNG/JPG, Text-Etiketten, Web-UI, CLI.
+
+```text
+Browser ──► inventory (Webhosting) ──HTTPS + Token──► Cloudflare ──► cloudflared ──► Bridge (Pi) ──TCP 9100──► PT-P750W
+                 api.php printer.print                                               :8750
+```
+
+- **Kein Treiber, kein CUPS.** Python 3 + Pillow, Docker-Image für arm64/armhf/amd64.
+- **Tape-Erkennung:** fragt vor jedem Druck den Status ab (Tape-Breite, Fehler wie *Abdeckung offen*,
+  *kein Tape*) und skaliert das Etikett passend. Meldet der Drucker keinen Status übers Netz, wird
+  für `PTB_DEFAULT_TAPE_MM` gedruckt.
+- **Exakte Größe:** Etiketten werden in mm übergeben und mit 180 dpi 1:1 gedruckt; zu hohe Etiketten
+  werden auf den Druckbereich des Tapes verkleinert (mit Warnung).
+- **Warteschlange:** ein Auftrag nach dem anderen, parallele Requests warten.
+- **Verlauf** der letzten Aufträge mit Rastervorschau (genau das, was der Druckkopf bekommt).
+
+## Tape & Druckbereich (180 dpi, 128 Pins)
+
+| Tape | Druckbereich | 14-mm-Etikett aus inventory |
+|---|---|---|
+| 24 mm | 18,1 mm | 1:1 |
+| 18 mm | 15,8 mm | 1:1 |
+| 12 mm | 9,9 mm | auf ~70 % verkleinert |
+| 9 / 6 / 3,5 mm | 7,1 / 4,5 / 3,4 mm | stark verkleinert |
+
+Für die Inventory-Labels (14 mm hoch) also **18 oder 24 mm TZe**.
+
+---
+
+## Einrichtung auf dem Raspberry Pi
+
+### 1. Drucker ins WLAN
+
+PT-P750W im **Infrastruktur-Modus** ins WLAN bringen (WPS-Taste am Router oder *Printer Setting
+Tool*), dann im Router eine **feste DHCP-Adresse** vergeben. Prüfen vom Pi aus:
+
+```bash
+nc -vz 192.168.1.50 9100
+```
+
+Tipp: Im *Printer Setting Tool* die **automatische Abschaltung** am Netzteil deaktivieren, sonst ist der
+Drucker nach einer Weile nicht mehr erreichbar.
+
+### 2. Bridge starten
+
+```bash
+mkdir -p ~/docker && cd ~/docker
+git clone https://github.com/niklaskoskowski/pt750w-print-trax.git
+cd pt750w-print-trax
+cp .env.example .env
+sed -i "s|^PTB_PRINTER_HOST=.*|PTB_PRINTER_HOST=192.168.1.50|" .env
+sed -i "s|^PTB_TOKEN=.*|PTB_TOKEN=$(openssl rand -hex 32)|" .env
+mkdir -p data
+docker compose up -d --build
+docker compose logs -f
+```
+
+Web-UI: `http://<pi-ip>:8750` – Token aus `.env` eintragen (`grep PTB_TOKEN .env`).
+
+Test ohne Browser:
+
+```bash
+TOKEN=$(grep ^PTB_TOKEN .env | cut -d= -f2)
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8750/api/status | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"text":"Hallo\nPT-P750W"}' http://localhost:8750/api/print/text
+```
+
+### 3. Von außen erreichbar machen (Cloudflare Tunnel)
+
+**Variante A – vorhandener cloudflared auf dem Pi:** im Cloudflare-Dashboard (Zero Trust → Networks →
+Tunnels → *dein Tunnel* → Public Hostname) einen Hostnamen anlegen, z. B. `print.example.com`, Service
+`http://localhost:8750` (cloudflared nativ / `network_mode: host`) bzw. `http://<pi-ip>:8750`
+(cloudflared in einem anderen Docker-Netz).
+
+**Variante B – eigener Tunnel aus diesem Compose-Stack:** Tunnel im Dashboard anlegen, Token in `.env`
+als `CLOUDFLARE_TUNNEL_TOKEN` eintragen, Public Hostname auf `http://bridge:8750` zeigen lassen:
+
+```bash
+docker compose --profile tunnel up -d
+```
+
+Der Origin ist **HTTP** – TLS endet bei Cloudflare.
+
+**Empfohlen: Cloudflare Access davor.** Zero Trust → Access → Applications → Self-hosted für
+`print.example.com`, Policy mit Aktion **Service Auth** und einem **Service Token** (Access → Service
+Auth → Service Tokens). Client-ID und Secret kommen in inventory unter Settings → Printer. Damit erreicht
+niemand die Bridge, der nicht beides hat: Access-Service-Token *und* Bridge-Token.
+(Für die Web-UI im Browser zusätzlich eine normale Allow-Policy mit deiner E-Mail.)
+
+### 4. inventory-management verbinden
+
+Settings → **Printer**: *Enable* einschalten, Bridge-URL (`https://print.example.com`), Token,
+optional Access-Service-Token → **Save settings** → **Test connection**. Danach gibt es im Label-Drawer
+und unter Settings → Labels den Button **Send to printer**.
+
+---
+
+## API
+
+Auth: `Authorization: Bearer <token>` oder `X-Api-Key: <token>`.
+
+| Methode | Pfad | |
+|---|---|---|
+| GET | `/health` | ohne Auth |
+| GET | `/api/status` | fragt den Drucker live ab; `?cached=1` liefert den letzten Stand ohne Verbindung |
+| GET | `/api/jobs` | letzte Aufträge |
+| GET | `/api/jobs/<id>/preview.png` | Rastervorschau eines Auftrags |
+| POST | `/api/print` | Bild drucken: JSON `{"image":"<base64>", …}` **oder** Bild als Body + Optionen als Query |
+| POST | `/api/print/text` | Text-Etikett: JSON `{"text":"Zeile 1\nZeile 2","align":"center", …}` |
+| POST | `/api/preview` | wie `/api/print`, rendert nur (Antwort enthält `preview` als PNG-Data-URL) |
+
+Optionen (JSON-Felder bzw. Query-Parameter, alle optional):
+
+| Feld | Werte | Standard |
+|---|---|---|
+| `widthMm`, `heightMm` | physische Größe des Bildes | ohne: Tape füllen |
+| `fit` | `exact` (1:1) · `fill` (Tape-Höhe füllen) | `exact` |
+| `rotate` | `auto` · `0` · `90` · `180` · `270` – `auto` legt Hochformat quer | `auto` |
+| `copies` | 1…`PTB_MAX_COPIES` | 1 |
+| `cut` | `each` · `half` · `none` | `PTB_CUT` |
+| `chain` | Kettendruck (kein Vorschub/Schnitt nach dem letzten Etikett) | `PTB_CHAIN` |
+| `marginMm` | Vorschub-Rand je Etikett | `PTB_MARGIN_MM` |
+| `tapeMm` | erwartetes Tape; weicht das geladene ab → `409 TAPE_MISMATCH` | – |
+| `threshold`, `dither`, `invert` | Schwarzweiß-Umsetzung | 128, aus, aus |
+| `highRes` | 180 × 360 dpi | aus |
+| `jobName`, `source` | Anzeige im Verlauf | – |
+| `dryRun` | nur rendern | aus |
+
+Antwort:
+
+```json
+{"ok": true,
+ "job": {"id": "…", "state": "printed", "tapeMm": 18, "tapeSource": "printer", "lengthMm": 30.0,
+         "heightMm": 14.0, "scalePct": 100, "copies": 1, "warnings": []},
+ "preview": "data:image/png;base64,…",
+ "printer": {"model": "PT-P750W", "tapeMm": 18, "errors": []}}
+```
+
+`state`: `printed` = Drucker hat den Abschluss gemeldet · `sent` = gesendet, Drucker meldet keinen Status.
+
+Fehler: `{"ok": false, "error": {"code": "…", "message": "…"}}` – `UNAUTHORIZED` 401, `BAD_REQUEST` 400,
+`BAD_IMAGE` 422, `TAPE_MISMATCH` / `PRINTER_ERROR` / `NO_MEDIA` 409, `OFFLINE` / `BUSY` 503,
+`TOO_LARGE` 413.
+
+Beispiel Bild:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: image/png" --data-binary @label.png \
+     "https://print.example.com/api/print?widthMm=30&heightMm=14&copies=2"
+```
+
+## CLI
+
+Im Container (`docker compose exec bridge …`) oder lokal mit `pip install Pillow`:
+
+```bash
+python3 -m ptbridge status
+python3 -m ptbridge print label.png --width-mm 30 --height-mm 14 --copies 2
+python3 -m ptbridge text "Kabel 12\nXLR 10 m" --cut half
+python3 -m ptbridge token                       # API-Token anzeigen
+python3 -m ptbridge dump label.png -o job.bin --tape 18   # Rohdaten, dann: nc <drucker> 9100 < job.bin
+```
+
+## Ohne Drucker testen
+
+Ein Mock-Drucker beantwortet Statusabfragen und schreibt jede empfangene Seite als PNG – dekodiert
+wie der echte Drucker die Daten liest:
+
+```bash
+python3 -m ptbridge mock --port 9100 --tape 18 --out ./mock-out
+PTB_PRINTER_HOST=127.0.0.1 PTB_TOKEN=test python3 -m ptbridge serve
+python3 -m unittest discover -s tests
+```
+
+`--silent` simuliert einen Drucker ohne Status-Rückkanal, `--cover-open` einen Fehler.
+
+## Betrieb
+
+```bash
+# Update
+cd ~/docker/pt750w-print-trax && git pull && docker compose up -d --build
+
+# Logs
+docker compose logs -f bridge
+
+# Backup (Konfiguration + Verlauf)
+tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
+```
+
+## Fehlersuche
+
+| Symptom | Ursache / Lösung |
+|---|---|
+| `OFFLINE … did not answer` | Drucker aus / Auto-Power-Off / andere IP. `nc -vz <ip> 9100` vom Pi. |
+| `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
+| `state: sent`, Status leer | Drucker liefert keinen Status übers Netz → `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen. |
+| `TAPE_MISMATCH` | inventory erwartet ein anderes Tape (Settings → Printer → *Expected tape*). |
+| Etikett zu klein | 12-mm-Tape eingelegt – Inventory-Labels brauchen 18/24 mm für 1:1. |
+| Cloudflare 502 | Origin falsch: `http://` (nicht https), richtiger Host/Port aus Sicht von cloudflared. |
+| Cloudflare 403 vom Inventory-Server | Access-Policy erwartet Service Token → Client-ID/Secret in inventory eintragen. |
+
+## Protokoll-Notizen
+
+Brother *Raster Command Reference PT-E550W/P750W/P710BT*: Invalidate (100 × `00`) → `ESC @` →
+`ESC i S` (Status, 32 Byte) → `ESC i a 01` (Raster) → je Seite `ESC i z` (Print-Info), `ESC i M`
+(Auto-Cut), `ESC i A 01`, `ESC i K` (Halbschnitt / Kettendruck / 360 dpi), `ESC i d` (Rand),
+`M 02` (TIFF/PackBits), Rasterzeilen `G nn nn …` bzw. `Z` (leer), `FF` zwischen Seiten, `Ctrl-Z` am
+Ende. Eine Rasterzeile = 16 Byte = 128 Pins quer zum Tape, Bit 7 von Byte 0 = Pin 0; das Tape liegt
+symmetrisch in der Mitte des Kopfes. Code: `ptbridge/protocol.py`, `ptbridge/raster.py`.

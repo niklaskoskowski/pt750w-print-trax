@@ -1,0 +1,6 @@
+.env
+data/
+mock-out/
+__pycache__/
+*.pyc
+*.bin

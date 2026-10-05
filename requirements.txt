@@ -1,0 +1,2 @@
+# Only needed outside Docker (the image uses Debian's python3-pil).
+Pillow>=9.1

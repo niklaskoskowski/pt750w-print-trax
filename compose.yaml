@@ -1,0 +1,32 @@
+services:
+  bridge:
+    build: .
+    image: pt750w-print-trax:latest
+    container_name: pt750w-bridge
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PTB_DATA_DIR: /data
+      PTB_PORT: "8750"
+    # Owner of ./data on the host (Pi user = 1000).
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ./data:/data
+    ports:
+      # LAN access to the web UI. "127.0.0.1:8750:8750" keeps it local to the Pi.
+      - "${PTB_PUBLISH:-8750}:8750"
+
+  # Optional: own Cloudflare Tunnel for the bridge.
+  #   docker compose --profile tunnel up -d
+  # Public hostname in the Cloudflare dashboard -> service http://bridge:8750
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: pt750w-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - bridge
+    profiles:
+      - tunnel

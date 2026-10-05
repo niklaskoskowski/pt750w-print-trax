@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>PT-P750W Print Bridge</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<script>
+  // Follow the OS theme before first paint.
+  document.documentElement.dataset.bsTheme =
+    matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+</script>
+<style>
+  :root { --ptb-radius: .6rem; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: .925rem; }
+  .navbar-brand { font-weight: 650; letter-spacing: -.01em; font-size: 1.05rem; }
+  .card { border-radius: var(--ptb-radius); }
+  .card-header { background: transparent; font-weight: 600; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
+  .kv dt { font-weight: 500; color: var(--bs-secondary-color); }
+  .kv dd { margin: 0; }
+  .drop { border: 2px dashed var(--bs-border-color); border-radius: var(--ptb-radius); padding: 1.25rem;
+          text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop.over, .drop:hover { border-color: var(--bs-primary); background: var(--bs-tertiary-bg); }
+  .drop img { max-height: 120px; max-width: 100%; }
+  .tape { background: repeating-conic-gradient(var(--bs-tertiary-bg) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
+          border-radius: var(--ptb-radius); padding: 1rem; overflow-x: auto; text-align: center; }
+  .tape img { image-rendering: pixelated; max-width: 100%; height: auto; min-height: 64px;
+              box-shadow: 0 1px 4px rgba(0,0,0,.25); border-radius: 2px; }
+  .thumb { height: 28px; image-rendering: pixelated; border-radius: 2px; background: #fff; }
+  .table td, .table th { vertical-align: middle; }
+  .status-dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; }
+</style>
+</head>
+<body class="bg-body-tertiary">
+
+<nav class="navbar border-bottom bg-body">
+  <div class="container-xl">
+    <span class="navbar-brand"><i class="bi bi-printer me-1"></i> PT-P750W Print Bridge</span>
+    <div class="d-flex align-items-center gap-2">
+      <span id="conn" class="small text-secondary"></span>
+      <button id="btn-token" class="btn btn-sm btn-outline-secondary" title="API token">
+        <i class="bi bi-key"></i>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main class="container-xl py-3">
+  <!-- Token -->
+  <div id="token-card" class="card mb-3 d-none">
+    <div class="card-body">
+      <h2 class="h6">API token</h2>
+      <p class="small text-secondary mb-2">
+        Steht in <code>.env</code> (<code>PTB_TOKEN</code>) oder, wenn dort leer, in <code>data/token</code>
+        (<code>docker compose exec bridge python -m ptbridge token</code>). Wird nur in diesem Browser gespeichert.
+      </p>
+      <form id="token-form" class="d-flex gap-2">
+        <input id="token-input" type="password" class="form-control form-control-sm font-monospace"
+               autocomplete="off" placeholder="Token" required>
+        <button class="btn btn-sm btn-primary">Speichern</button>
+      </form>
+      <div id="token-error" class="small text-danger mt-2"></div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <!-- Status -->
+    <div class="col-12 col-lg-4">
+      <div class="card h-100">
+        <div class="card-header d-flex align-items-center">
+          <span class="flex-grow-1">Drucker</span>
+          <button id="btn-status" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-arrow-clockwise"></i> Status
+          </button>
+        </div>
+        <div class="card-body" id="status-body">
+          <div class="text-secondary small">Noch nicht abgefragt.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Print -->
+    <div class="col-12 col-lg-8">
+      <div class="card h-100">
+        <div class="card-header">
+          <ul class="nav nav-underline card-header-tabs">
+            <li class="nav-item"><button class="nav-link active" data-tab="image"><i class="bi bi-image"></i> Bild</button></li>
+            <li class="nav-item"><button class="nav-link" data-tab="text"><i class="bi bi-fonts"></i> Text</button></li>
+          </ul>
+        </div>
+        <div class="card-body">
+          <form id="print-form" autocomplete="off">
+            <div data-pane="image">
+              <label class="drop d-block mb-3" id="drop">
+                <input type="file" id="file" accept="image/*" hidden>
+                <div id="drop-empty"><i class="bi bi-upload fs-4 d-block mb-1"></i>
+                  PNG/JPG hierher ziehen oder klicken</div>
+                <img id="drop-img" class="d-none" alt="">
+                <div id="drop-name" class="small text-secondary mt-1"></div>
+              </label>
+              <div class="row g-2 mb-2">
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="widthMm">Breite (mm)</label>
+                  <input id="widthMm" name="widthMm" type="number" step="0.1" min="1" class="form-control form-control-sm" placeholder="auto">
+                </div>
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="heightMm">Höhe (mm)</label>
+                  <input id="heightMm" name="heightMm" type="number" step="0.1" min="1" class="form-control form-control-sm" placeholder="auto">
+                </div>
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="fit">Größe</label>
+                  <select id="fit" name="fit" class="form-select form-select-sm">
+                    <option value="exact">1:1 (mm)</option>
+                    <option value="fill">Tape füllen</option>
+                  </select>
+                </div>
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="rotate">Drehen</label>
+                  <select id="rotate" name="rotate" class="form-select form-select-sm">
+                    <option value="auto">auto</option><option value="0">0°</option>
+                    <option value="90">90°</option><option value="180">180°</option><option value="270">270°</option>
+                  </select>
+                </div>
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="threshold">Schwellwert</label>
+                  <input id="threshold" name="threshold" type="number" min="1" max="254" value="128" class="form-control form-control-sm">
+                </div>
+                <div class="col-6 col-md-3 d-flex align-items-end">
+                  <div class="form-check form-switch mb-1">
+                    <input class="form-check-input" type="checkbox" id="dither" name="dither">
+                    <label class="form-check-label small" for="dither">Dithering (Fotos)</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div data-pane="text" class="d-none">
+              <div class="row g-2 mb-2">
+                <div class="col-12 col-md-9">
+                  <label class="form-label small mb-1" for="text">Text (max. 6 Zeilen)</label>
+                  <textarea id="text" name="text" rows="3" class="form-control form-control-sm" maxlength="500"
+                            placeholder="Kabel 12&#10;XLR 10 m"></textarea>
+                </div>
+                <div class="col-12 col-md-3">
+                  <label class="form-label small mb-1" for="align">Ausrichtung</label>
+                  <select id="align" name="align" class="form-select form-select-sm">
+                    <option value="center">zentriert</option><option value="left">links</option><option value="right">rechts</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="row g-2 mb-3">
+              <div class="col-4 col-md-2">
+                <label class="form-label small mb-1" for="copies">Kopien</label>
+                <input id="copies" name="copies" type="number" min="1" max="50" value="1" class="form-control form-control-sm">
+              </div>
+              <div class="col-8 col-md-4">
+                <label class="form-label small mb-1" for="cut">Schnitt</label>
+                <select id="cut" name="cut" class="form-select form-select-sm">
+                  <option value="each">Jedes Etikett abschneiden</option>
+                  <option value="half">Halbschnitt zwischen Etiketten</option>
+                  <option value="none">Kein Schnitt zwischen Etiketten</option>
+                </select>
+              </div>
+              <div class="col-6 col-md-2">
+                <label class="form-label small mb-1" for="marginMm">Rand (mm)</label>
+                <input id="marginMm" name="marginMm" type="number" step="0.5" min="0" max="50" class="form-control form-control-sm" placeholder="Std.">
+              </div>
+              <div class="col-6 col-md-2">
+                <label class="form-label small mb-1" for="tapeMm">Tape</label>
+                <select id="tapeMm" name="tapeMm" class="form-select form-select-sm">
+                  <option value="">geladenes</option>
+                  <option value="3.5">3.5 mm</option><option value="6">6 mm</option><option value="9">9 mm</option>
+                  <option value="12">12 mm</option><option value="18">18 mm</option><option value="24">24 mm</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-2 d-flex align-items-end">
+                <div class="form-check form-switch mb-1">
+                  <input class="form-check-input" type="checkbox" id="highRes" name="highRes">
+                  <label class="form-check-label small" for="highRes">360 dpi</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="d-flex gap-2 flex-wrap">
+              <button type="button" id="btn-preview" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-eye"></i> Vorschau
+              </button>
+              <button type="submit" id="btn-print" class="btn btn-sm btn-primary">
+                <i class="bi bi-printer"></i> Drucken
+              </button>
+              <span id="print-msg" class="small align-self-center"></span>
+            </div>
+          </form>
+
+          <div id="preview" class="mt-3 d-none">
+            <div class="tape"><img id="preview-img" alt="Rasterbild"></div>
+            <div id="preview-info" class="small text-secondary mt-2"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Jobs -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center">
+          <span class="flex-grow-1">Letzte Aufträge</span>
+          <button id="btn-jobs" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise"></i></button>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead><tr class="small text-secondary">
+              <th>Zeit</th><th>Auftrag</th><th>Status</th><th>Tape</th><th>Länge</th><th>Kopien</th><th>Raster</th>
+            </tr></thead>
+            <tbody id="jobs"><tr><td colspan="7" class="text-secondary small">–</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="small text-secondary mt-3 mb-0" id="footer"></p>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const KEY = 'ptbToken';
+  const store = {
+    get() { try { return localStorage.getItem(KEY) || ''; } catch { return ''; } },
+    set(v) { try { localStorage.setItem(KEY, v); } catch { /* private mode */ } },
+  };
+  let token = store.get();
+  let tab = 'image';
+  let file = null;
+  const thumbs = new Map();
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  class HttpError extends Error {
+    constructor(status, code, message) { super(message); this.status = status; this.code = code; }
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      ...opts,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(opts.headers || {}) },
+    });
+    if (res.status === 401) { showToken('Token fehlt oder ist falsch.'); }
+    const isJson = (res.headers.get('Content-Type') || '').includes('json');
+    const body = isJson ? await res.json() : null;
+    if (!res.ok || (body && body.ok === false)) {
+      throw new HttpError(res.status, body?.error?.code || 'HTTP', body?.error?.message || `HTTP ${res.status}`);
+    }
+    return body;
+  }
+
+  function showToken(msg = '') {
+    $('token-card').classList.remove('d-none');
+    $('token-error').textContent = msg;
+    $('token-input').value = token;
+    $('token-input').focus();
+  }
+
+  $('btn-token').onclick = () => showToken();
+  $('token-form').onsubmit = (e) => {
+    e.preventDefault();
+    token = $('token-input').value.trim();
+    store.set(token);
+    $('token-card').classList.add('d-none');
+    refreshStatus(true);
+    loadJobs();
+  };
+
+  // --- status ----------------------------------------------------------
+  function renderStatus(data) {
+    const pr = data.printer || {};
+    const st = pr.status;
+    const b = data.bridge || {};
+    if (b.name) $('footer').textContent = `${b.name} ${b.version} · Drucker ${b.printer} · Standard-Tape ${b.defaults?.tapeMm} mm`;
+    if (!st) {
+      $('status-body').innerHTML = pr.reachable
+        ? `<div class="alert alert-info small mb-0"><i class="bi bi-info-circle"></i>
+             Drucker erreichbar, meldet aber keinen Status über das Netzwerk. Gedruckt wird für das
+             Standard-Tape (${esc(b.defaults?.tapeMm)} mm).</div>`
+        : `<div class="text-secondary small">${pr.lastError ? esc(pr.lastError) : 'Noch nicht abgefragt.'}</div>`;
+      setConn(pr.reachable ? 'ok' : (pr.lastError ? 'err' : 'unk'));
+      return;
+    }
+    const errors = st.errors?.length
+      ? `<div class="alert alert-danger small py-2 mb-2"><i class="bi bi-exclamation-triangle"></i> ${st.errors.map(esc).join(', ')}</div>`
+      : '';
+    const when = pr.statusAt ? new Date(pr.statusAt * 1000).toLocaleTimeString() : '';
+    $('status-body').innerHTML = `${errors}
+      <dl class="kv small">
+        <dt>Modell</dt><dd>${esc(st.model)}</dd>
+        <dt>Tape</dt><dd><strong>${esc(st.tapeLabel)}</strong> · ${esc(st.mediaLabel)}</dd>
+        <dt>Farbe</dt><dd>${esc(st.textColor)} auf ${esc(st.tapeColor)}</dd>
+        <dt>Druckbereich</dt><dd>${st.printablePins ? (st.printablePins * 25.4 / 180).toFixed(1) + ' mm (' + st.printablePins + ' dots)' : '–'}</dd>
+        <dt>Zustand</dt><dd>${st.errors?.length ? 'Fehler' : (st.phase === 'printing' ? 'druckt' : 'bereit')}</dd>
+        <dt>Stand</dt><dd>${esc(when)}</dd>
+      </dl>`;
+    setConn(st.errors?.length ? 'warn' : 'ok');
+  }
+
+  function setConn(kind) {
+    const map = {
+      ok: ['bg-success', 'verbunden'], warn: ['bg-warning', 'Fehler am Drucker'],
+      err: ['bg-danger', 'nicht erreichbar'], unk: ['bg-secondary', 'unbekannt'],
+    };
+    const [cls, label] = map[kind] || map.unk;
+    $('conn').innerHTML = `<span class="status-dot ${cls}"></span> ${label}`;
+  }
+
+  async function refreshStatus(live = true) {
+    if (!token) { showToken(); return; }
+    const btn = $('btn-status');
+    btn.disabled = true;
+    try {
+      renderStatus(await api(`/api/status${live ? '' : '?cached=1'}`));
+    } catch (err) {
+      if (err.status !== 401) {
+        $('status-body').innerHTML = `<div class="alert alert-danger small mb-0"><i class="bi bi-wifi-off"></i> ${esc(err.message)}</div>`;
+        setConn('err');
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $('btn-status').onclick = () => refreshStatus(true);
+
+  // --- jobs ------------------------------------------------------------
+  const STATE = {
+    printed: ['bg-success-subtle text-success-emphasis', 'gedruckt'],
+    sent: ['bg-info-subtle text-info-emphasis', 'gesendet'],
+  };
+
+  async function thumb(id) {
+    if (thumbs.has(id)) return thumbs.get(id);
+    const res = await fetch(`/api/jobs/${id}/preview.png`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return '';
+    const url = URL.createObjectURL(await res.blob());
+    thumbs.set(id, url);
+    return url;
+  }
+
+  async function loadJobs() {
+    if (!token) return;
+    try {
+      const { jobs } = await api('/api/jobs');
+      if (!jobs.length) {
+        $('jobs').innerHTML = '<tr><td colspan="7" class="text-secondary small">Noch keine Aufträge.</td></tr>';
+        return;
+      }
+      $('jobs').innerHTML = jobs.map((j) => {
+        const [cls, label] = STATE[j.state] || ['bg-secondary-subtle', j.state];
+        const warn = j.warnings?.length ? ` <i class="bi bi-exclamation-circle text-warning" title="${esc(j.warnings.join('\n'))}"></i>` : '';
+        return `<tr>
+          <td class="small text-nowrap">${esc(new Date(j.createdAt).toLocaleString())}</td>
+          <td class="small">${esc(j.name)}${j.source ? ` <span class="text-secondary">· ${esc(j.source)}</span>` : ''}${warn}</td>
+          <td><span class="badge ${cls}">${label}</span></td>
+          <td class="small">${esc(j.tapeLabel)}</td>
+          <td class="small">${esc(j.lengthMm)} mm${j.scalePct !== 100 ? ` <span class="text-warning">(${j.scalePct} %)</span>` : ''}</td>
+          <td class="small">${esc(j.copies)}</td>
+          <td>${j.hasPreview ? `<img class="thumb" data-job="${esc(j.id)}" alt="">` : ''}</td>
+        </tr>`;
+      }).join('');
+      for (const img of document.querySelectorAll('img[data-job]')) {
+        thumb(img.dataset.job).then((url) => { if (url) img.src = url; });
+      }
+    } catch { /* status card shows the problem */ }
+  }
+  $('btn-jobs').onclick = loadJobs;
+
+  // --- form ------------------------------------------------------------
+  for (const btn of document.querySelectorAll('[data-tab]')) {
+    btn.onclick = () => {
+      tab = btn.dataset.tab;
+      document.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('[data-pane]').forEach((p) => p.classList.toggle('d-none', p.dataset.pane !== tab));
+      $('preview').classList.add('d-none');
+    };
+  }
+
+  function pickFile(f) {
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { msg('Bitte eine Bilddatei wählen.', 'danger'); return; }
+    file = f;
+    $('drop-empty').classList.add('d-none');
+    $('drop-img').classList.remove('d-none');
+    $('drop-img').src = URL.createObjectURL(f);
+    $('drop-name').textContent = `${f.name} · ${(f.size / 1024).toFixed(0)} KB`;
+    $('preview').classList.add('d-none');
+  }
+  $('file').onchange = (e) => pickFile(e.target.files[0]);
+  const drop = $('drop');
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); pickFile(e.dataTransfer.files[0]); });
+
+  function options() {
+    const out = { source: 'web' };
+    const names = ['copies', 'cut', 'marginMm', 'tapeMm'];
+    if (tab === 'image') names.push('widthMm', 'heightMm', 'fit', 'rotate', 'threshold');
+    for (const name of names) {
+      const v = $(name).value.trim();
+      if (v !== '') out[name] = v;
+    }
+    if ($('highRes').checked) out.highRes = '1';
+    if (tab === 'image' && $('dither').checked) out.dither = '1';
+    return out;
+  }
+
+  function msg(text, kind = 'secondary') {
+    $('print-msg').className = `small align-self-center text-${kind}`;
+    $('print-msg').textContent = text;
+  }
+
+  async function submit(dry) {
+    if (!token) { showToken(); return; }
+    const opts = options();
+    let req;
+    if (tab === 'image') {
+      if (!file) { msg('Erst ein Bild wählen.', 'danger'); return; }
+      if (file.name) opts.jobName = file.name;
+      req = api(`/api/${dry ? 'preview' : 'print'}?${new URLSearchParams(opts)}`, {
+        method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
+      });
+    } else {
+      const text = $('text').value;
+      if (!text.trim()) { msg('Text fehlt.', 'danger'); return; }
+      req = api('/api/print/text', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...opts, text, align: $('align').value, dryRun: dry }),
+      });
+    }
+    $('btn-print').disabled = $('btn-preview').disabled = true;
+    msg(dry ? 'Rendere …' : 'Drucke …');
+    try {
+      const res = await req;
+      const j = res.job;
+      $('preview').classList.remove('d-none');
+      $('preview-img').src = res.preview;
+      $('preview-img').style.width = `${Math.min(100, (j.lengthMm / 1.2))}%`;
+      $('preview-info').innerHTML = `${esc(j.tapeLabel)} (${j.tapeSource === 'printer' ? 'erkannt' : j.tapeSource === 'request' ? 'gewählt' : 'Standard'})
+        · ${esc(j.lengthMm)} × ${esc(j.heightMm)} mm · ${j.scalePct} %${j.rotated ? ` · ${j.rotated}° gedreht` : ''}
+        ${j.warnings.map((w) => `<div class="text-warning-emphasis"><i class="bi bi-exclamation-triangle"></i> ${esc(w)}</div>`).join('')}`;
+      if (dry) msg('');
+      else msg(j.state === 'printed' ? `Gedruckt (${j.copies}×).` : 'An den Drucker gesendet.', 'success');
+      if (res.printer) renderStatus({ printer: { reachable: true, status: res.printer, statusAt: Date.now() / 1000 }, bridge: {} });
+      if (!dry) loadJobs();
+    } catch (err) {
+      msg(err.message, 'danger');
+    } finally {
+      $('btn-print').disabled = $('btn-preview').disabled = false;
+    }
+  }
+
+  $('print-form').onsubmit = (e) => { e.preventDefault(); submit(false); };
+  $('btn-preview').onclick = () => submit(true);
+
+  // --- start -----------------------------------------------------------
+  if (!token) { showToken(); setConn('unk'); } else { refreshStatus(true); loadJobs(); }
+})();
+</script>
+</body>
+</html>
