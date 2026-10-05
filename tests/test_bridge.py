@@ -186,6 +186,14 @@ class EndToEnd(MockBase):
         for page in pages[1:]:
             self.assertEqual(Image.open(page).tobytes(), first, page.name)
 
+    def test_waits_for_the_printer_to_close(self):
+        bridge, _ = self.bridge(12, silent=True, snmp_on=True)
+        res = bridge.print_text("x", JobParams({}, bridge.cfg))
+        self.assertTrue(res["job"]["connection"]["closedByPrinter"])
+        # A status check with SNMP answering does not open 9100 at all.
+        status = bridge.printer.status()
+        self.assertEqual(status["statusVia"], "snmp")
+
     def test_tcp_status_used_without_snmp(self):
         bridge, _ = self.bridge(18)
         res = bridge.print_text("x", JobParams({}, bridge.cfg))

@@ -46,12 +46,14 @@ class JobResult:
     pages_confirmed: int = 0
     bytes_sent: int = 0
     notes: list[str] = field(default_factory=list)
+    connection: dict = field(default_factory=dict)
 
 
 class Printer:
     def __init__(self, host: str, port: int = 9100, *, connect_timeout: float = 5.0,
                  status_timeout: float = 2.0, wait_timeout: float = 25.0, busy_timeout: float = 120.0,
-                 snmp_community: str = "public", snmp_timeout: float = 1.5, snmp_port: int = 161):
+                 snmp_community: str = "public", snmp_timeout: float = 1.5, snmp_port: int = 161,
+                 close_wait: float = 15.0):
         self.host = host
         self.port = port
         self.connect_timeout = connect_timeout
@@ -61,6 +63,7 @@ class Printer:
         self.snmp_community = snmp_community
         self.snmp_timeout = snmp_timeout
         self.snmp_port = snmp_port
+        self.close_wait = close_wait
         self.lock = threading.Lock()
         self.last_status: dict | None = None
         self.last_status_at: float | None = None
@@ -127,6 +130,57 @@ class Printer:
             except OSError:
                 pass
 
+    @staticmethod
+    def _finish(sock: socket.socket, timeout: float) -> dict:
+        """
+        End of a job, the way CUPS' socket backend does it: half-close, then
+        read until the PRINTER closes the connection. Closing our side for
+        good while the printer still talks makes the kernel answer with RST –
+        the PT-P750W then drops the job, or the next one prints blank.
+        """
+        started = time.monotonic()
+        received = bytearray()
+        closed_by_printer = False
+        try:
+            sock.shutdown(socket.SHUT_WR)
+            deadline = started + timeout
+            while time.monotonic() < deadline:
+                sock.settimeout(max(0.05, deadline - time.monotonic()))
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    closed_by_printer = True
+                    break
+                received += chunk
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        info = {
+            "closedByPrinter": closed_by_printer,
+            "seconds": round(time.monotonic() - started, 2),
+            "received": bytes(received).hex(" ") if received else "",
+        }
+        log.info("connection: %s after %.1fs%s",
+                 "printer closed it" if closed_by_printer else "printer kept it open, closed by bridge",
+                 info["seconds"], f", printer sent {len(received)} bytes" if received else "")
+        return info
+
+    def _wait_idle(self, status: dict) -> dict:
+        """A label still printing (or its cut still pending) – wait before sending the next job."""
+        deadline = time.monotonic() + 30.0
+        while status.get("phase") == "printing" and time.monotonic() < deadline:
+            time.sleep(0.5)
+            status = self._snmp_status() or status
+        if status.get("phase") == "printing":
+            raise PrinterError("BUSY", "Printer is still printing the last job.", 503, status)
+        return status
+
     def _remember(self, status: dict | None) -> None:
         if status is not None:
             self.last_status = status
@@ -189,9 +243,18 @@ class Printer:
         self._acquire()
         try:
             snmp_status = self._snmp_status()
+            if snmp_status is not None:
+                # SNMP answers: leave port 9100 alone. A connection opened and
+                # dropped just to look is one more session the printer has to
+                # tidy up before the next job.
+                self.status_supported = True
+                self.status_via = "snmp"
+                self._remember(snmp_status)
+                self.last_error = None
+                return {"reachable": True, "status": snmp_status, "statusSupported": True, "statusVia": "snmp"}
             sock = self._connect()
             try:
-                status = self._query(sock, snmp_status, probe_tcp=True)
+                status = self._query(sock, None, probe_tcp=True)
             finally:
                 self._close(sock, 0.3)
             self.last_error = None
@@ -222,6 +285,7 @@ class Printer:
             pages = 1
             if before is not None:
                 self._precheck(before)
+                before = self._wait_idle(before)
                 job, pages = build(before)
             sock = self._connect()
             try:
@@ -249,10 +313,13 @@ class Printer:
                 tcp_confirmed = via == "tcp"
                 if tcp_confirmed:
                     self._await(sock, pages, result)
-            finally:
-                self._close(sock, 1.0)
+            except BaseException:
+                self._close(sock, 0.3)
+                raise
+            result.connection = self._finish(sock, self.close_wait)
+            self._read_back(result, pages)
             if not tcp_confirmed:
-                watched = self._watch_snmp(pages, result)
+                watched = result.state == "printed" or self._watch_snmp(pages, result)
                 if before is None:
                     result.notes.append("No status before the job (TCP 9100 or SNMP) – "
                                         "sized for the requested/default tape.")
@@ -268,6 +335,22 @@ class Printer:
             raise
         finally:
             self.lock.release()
+
+    def _read_back(self, result: JobResult, pages: int) -> None:
+        """Status packets the printer sent on the print connection after the job, if any."""
+        raw = bytes.fromhex(result.connection.get("received", "").replace(" ", ""))
+        for i in range(0, len(raw) - 31, 32):
+            try:
+                st = p.parse_status(raw[i:i + 32])
+            except ValueError:
+                continue
+            result.status_after = st
+            self._remember(st)
+            if st["errors"]:
+                raise PrinterError("PRINTER_ERROR", "Printer reports: " + ", ".join(st["errors"]), 409, st)
+            if st["statusType"] == 0x01:
+                result.pages_confirmed = min(pages, result.pages_confirmed + 1)
+                result.state = "printed"
 
     @staticmethod
     def _precheck(status: dict) -> None:

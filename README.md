@@ -233,6 +233,7 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 | `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
 | `state: sent`, `tapeSource: default` | Kein Status, weder Port 9100 noch SNMP. `docker compose exec bridge python3 -m ptbridge probe` zeigt beide Wege roh. SNMP im Drucker aktivieren (Web-Konfiguration / Printer Setting Tool) oder `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen bzw. in inventory *Expected tape* wählen. |
 | Fehlersuche Protokoll | `watch 60` in einem Terminal, im anderen drucken (Bridge oder Brother-App) – zeigt das Statuspaket roh. Der letzte Job liegt als `data/last-job.bin`, Job-Output enthält `statusBefore`/`statusAfter`. |
+| Erster Job druckt, danach nur Vorschub + Schnitt | Verbindung wurde zu früh geschlossen. Seit dieser Version wartet die Bridge, bis der Drucker die Verbindung selbst schließt (`PTB_CLOSE_WAIT`), und vor jedem Job, bis er nicht mehr druckt. Im Log: `connection: printer closed it after …s`. |
 | Drucker geht nach dem Job auf ERROR | Drucker aus/an, dann `selftest` (siehe *Befehlssatz finden*). Steht der Drucker noch im Fehler, lehnt die Bridge den nächsten Job ab (`still in an error state`). |
 | `state: sent`, `tapeSource: printer` | Normal bei Status per SNMP: Tape erkannt, nur die Druckbestätigung fehlt. |
 | `TAPE_MISMATCH` | inventory erwartet ein anderes Tape (Settings → Printer → *Expected tape*). |

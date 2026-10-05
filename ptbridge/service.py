@@ -134,6 +134,7 @@ class Bridge:
             snmp_community=cfg.snmp_community,
             snmp_timeout=cfg.snmp_timeout,
             snmp_port=cfg.snmp_port,
+            close_wait=cfg.close_wait,
         )
         self.jobs = JobLog(cfg.data_dir, cfg.history)
         self.started = time.time()
@@ -270,6 +271,7 @@ class Bridge:
             "statusVia": self.printer.status_via,
             "statusBefore": (result.status_before or {}).get("raw") if result else None,
             "statusAfter": (result.status_after or {}).get("raw") if result else None,
+            "connection": result.connection if result else None,
             "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         if not params.dry_run:

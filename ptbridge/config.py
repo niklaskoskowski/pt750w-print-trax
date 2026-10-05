@@ -56,6 +56,7 @@ class Config:
     snmp_timeout: float
     snmp_port: int
     profile: str
+    close_wait: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -84,6 +85,8 @@ class Config:
             snmp_port=_int("PTB_SNMP_PORT", 161),
             # compat is what a PT-P750W over Wi-Fi accepts (found with `selftest`).
             profile=_env("PTB_PROFILE", "compat").lower(),
+            # How long to wait for the printer to close the connection after a job.
+            close_wait=max(1.0, _float("PTB_CLOSE_WAIT", 15.0)),
         )
 
     def ensure_token(self) -> str:
