@@ -2,6 +2,7 @@
 python -m ptbridge [serve]                 HTTP bridge (default)
 python -m ptbridge status                  ask the printer
 python -m ptbridge probe                   raw status over TCP 9100 and SNMP (diagnostics)
+python -m ptbridge watch [SECONDS]         print every change of the SNMP status (diagnostics)
 python -m ptbridge print FILE [options]    print an image
 python -m ptbridge text "TEXT" [options]   print a text label
 python -m ptbridge dump FILE -o job.bin    raw printer bytes, e.g. for: nc <printer> 9100 < job.bin
@@ -68,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the HTTP bridge (default)")
     sub.add_parser("status", help="query the printer")
     sub.add_parser("probe", help="raw status over TCP 9100 and SNMP, for diagnostics")
+    wt = sub.add_parser("watch", help="print every change of the SNMP status")
+    wt.add_argument("seconds", nargs="?", type=float, default=60)
     sub.add_parser("token", help="print the API token")
 
     pr = sub.add_parser("print", help="print an image file")
@@ -147,6 +150,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(bridge.status(), indent=2, ensure_ascii=False))
         elif cmd == "probe":
             print(json.dumps(bridge.printer.probe(), indent=2, ensure_ascii=False))
+        elif cmd == "watch":
+            print(f"watching SNMP status for {args.seconds:g}s – print something now (Ctrl-C to stop)")
+            try:
+                for elapsed, st in bridge.printer.watch(args.seconds):
+                    if st is None:
+                        print(f"{elapsed:6.1f}s  no SNMP answer", flush=True)
+                        continue
+                    summary = f"{st['statusLabel']}, {st['phase']}, {st['tapeLabel']}"
+                    if st["errors"]:
+                        summary += ", errors: " + ", ".join(st["errors"])
+                    print(f"{elapsed:6.1f}s  {st['raw']}  {summary}", flush=True)
+            except KeyboardInterrupt:
+                pass
         elif cmd == "print":
             params = JobParams(_params(args, {
                 "widthMm": args.width_mm, "heightMm": args.height_mm, "fit": args.fit,

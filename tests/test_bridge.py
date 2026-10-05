@@ -168,6 +168,12 @@ class EndToEnd(MockBase):
             bridge.print_text("x", JobParams({"tapeMm": 18}, bridge.cfg))
         self.assertEqual(ctx.exception.code, "TAPE_MISMATCH")
 
+    def test_tcp_status_used_without_snmp(self):
+        bridge, _ = self.bridge(18)
+        res = bridge.print_text("x", JobParams({}, bridge.cfg))
+        self.assertEqual(res["job"]["statusVia"], "tcp")
+        self.assertEqual(res["job"]["state"], "printed")
+
     def test_silent_printer_uses_default_tape(self):
         bridge, out = self.bridge(18, silent=True)
         res = bridge.print_text("hello", JobParams({}, bridge.cfg))
@@ -190,8 +196,10 @@ class SnmpFallback(MockBase):
         # SNMP sees the printing phase come and go – or misses it on a fast job.
         self.assertIn(res["job"]["state"], ("printed", "sent"))
         self.assertEqual(bridge.printer.status_via, "snmp")
-        # Jobs stop asking 9100 for a status that never comes.
-        self.assertIs(bridge.printer.tcp_status, False)
+        # SNMP answered, so 9100 was never asked for a status it would not give.
+        self.assertIsNone(bridge.printer.tcp_status)
+        self.assertTrue(res["job"]["statusBefore"].startswith("80 20 42 30 68"))
+        self.assertTrue((Path(bridge.cfg.data_dir) / "last-job.bin").read_bytes().startswith(b"\x00" * 100 + b"\x1b\x40\x1b\x69\x61\x01"))
         with self.assertRaises(ApiError) as ctx:
             bridge.print_text("x", JobParams({"tapeMm": 18}, bridge.cfg))
         self.assertEqual(ctx.exception.code, "TAPE_MISMATCH")

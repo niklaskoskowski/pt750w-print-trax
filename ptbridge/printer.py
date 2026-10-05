@@ -153,23 +153,30 @@ class Printer:
             log.warning("unexpected SNMP status value: %s", raw.hex())
             return None
 
-    def _query(self, sock: socket.socket, probe_tcp: bool = False) -> dict | None:
-        status = None
-        via = None
-        if self.tcp_status is not False or probe_tcp:
-            sock.sendall(p.INVALIDATE + p.INITIALIZE + p.STATUS_REQUEST)
-            raw = self._read_packet(sock, self.status_timeout)
-            self.tcp_status = raw is not None
-            if raw is not None:
-                try:
-                    status, via = p.parse_status(raw), "tcp"
-                except ValueError:
-                    log.warning("unexpected status reply: %s", raw.hex())
-        else:
-            sock.sendall(p.INVALIDATE + p.INITIALIZE)
-        if status is None:
-            status = self._snmp_status()
-            via = "snmp" if status is not None else None
+    def _tcp_status(self, sock: socket.socket) -> dict | None:
+        """ESC i S on an open connection whose preamble has been sent."""
+        sock.sendall(p.STATUS_REQUEST)
+        raw = self._read_packet(sock, self.status_timeout)
+        self.tcp_status = raw is not None
+        if raw is None:
+            return None
+        try:
+            return p.parse_status(raw)
+        except ValueError:
+            log.warning("unexpected status reply: %s", raw.hex())
+            return None
+
+    def _query(self, sock: socket.socket, snmp_status: dict | None, probe_tcp: bool = False) -> dict | None:
+        """
+        SNMP first: it costs the print connection nothing. Only without it is
+        ESC i S sent on 9100 – a request the printer leaves unanswered would
+        otherwise sit in the middle of every job.
+        """
+        status, via = snmp_status, ("snmp" if snmp_status is not None else None)
+        sock.sendall(p.INVALIDATE + p.INITIALIZE)
+        if status is None and (self.tcp_status is not False or probe_tcp):
+            status = self._tcp_status(sock)
+            via = "tcp" if status is not None else None
         self.status_supported = status is not None
         self.status_via = via
         self._remember(status)
@@ -181,9 +188,10 @@ class Printer:
         """{reachable, status|None, statusSupported}; raises PrinterError when offline."""
         self._acquire()
         try:
+            snmp_status = self._snmp_status()
             sock = self._connect()
             try:
-                status = self._query(sock, probe_tcp=True)
+                status = self._query(sock, snmp_status, probe_tcp=True)
             finally:
                 self._close(sock, 0.3)
             self.last_error = None
@@ -204,9 +212,10 @@ class Printer:
         self._acquire()
         started = time.monotonic()
         try:
+            snmp_status = self._snmp_status()
             sock = self._connect()
             try:
-                before = self._query(sock)
+                before = self._query(sock, snmp_status)
                 if before and before["errors"]:
                     raise PrinterError("PRINTER_ERROR", "Printer reports: " + ", ".join(before["errors"]),
                                        409, before)
@@ -266,9 +275,13 @@ class Printer:
             polled = True
             result.status_after = st
             self._remember(st)
-            if st["errors"] or st["statusType"] == 0x02:
+            if st["errors"]:
                 raise PrinterError("PRINTER_ERROR", "Printer went into error after the job: "
-                                   + (", ".join(st["errors"]) or "no detail given") + ".", 409, st)
+                                   + ", ".join(st["errors"]) + f". Status {st['raw']}", 409, st)
+            if st["statusType"] == 0x02 and not result.notes:
+                # Status type "error" without a single error bit: report it with
+                # the raw packet rather than guess what it means.
+                result.notes.append(f"Printer status says 'error' without an error bit: {st['raw']}")
             if st["phase"] == "printing":
                 seen_printing = True
             elif seen_printing:
@@ -355,3 +368,15 @@ class Printer:
                 snmp[key] = f"error: {exc}"
         out["snmp"] = snmp
         return out
+
+    def watch(self, seconds: float, interval: float = 0.3):
+        """Yields (elapsed, status) for every change of the SNMP status packet."""
+        started = time.monotonic()
+        last = None
+        while time.monotonic() - started < seconds:
+            st = self._snmp_status()
+            raw = st["raw"] if st else None
+            if raw != last:
+                last = raw
+                yield time.monotonic() - started, st
+            time.sleep(interval)

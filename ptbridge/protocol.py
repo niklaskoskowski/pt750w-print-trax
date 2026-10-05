@@ -328,6 +328,7 @@ def parse_status(raw: bytes) -> dict:
         "notification": raw[22],
         "tapeColor": TAPE_COLORS.get(raw[24], f"0x{raw[24]:02x}"),
         "textColor": TEXT_COLORS.get(raw[25], f"0x{raw[25]:02x}"),
+        "raw": raw[:32].hex(" "),
     }
 
 

@@ -210,6 +210,13 @@ class Bridge:
         return self._run(lambda tape: render(text_image(text, tape, align=align), tape, params.render),
                          params, "text")
 
+    def _keep_last_job(self, data: bytes) -> None:
+        """The exact bytes of the last job, for `nc <printer> 9100 < data/last-job.bin` and analysis."""
+        try:
+            (self.cfg.data_dir / "last-job.bin").write_bytes(data)
+        except OSError:
+            pass
+
     def _run(self, make, params: JobParams, kind: str) -> dict:
         started = time.monotonic()
         holder: dict = {}
@@ -220,6 +227,8 @@ class Bridge:
             holder.update(rendered=rendered, tape=tape, source=source)
             media = status["mediaType"] if status else 0x01
             job = p.build_job(rendered.lines, params.job_options(tape, media), preamble=False)
+            if not params.dry_run:
+                self._keep_last_job(p.INVALIDATE + p.INITIALIZE + job)
             return job, params.copies
 
         try:
@@ -257,6 +266,10 @@ class Bridge:
             "warnings": rendered.warnings + ([] if result is None else result.notes),
             "pagesConfirmed": 0 if result is None else result.pages_confirmed,
             "durationMs": int((time.monotonic() - started) * 1000),
+            "profile": params.profile,
+            "statusVia": self.printer.status_via,
+            "statusBefore": (result.status_before or {}).get("raw") if result else None,
+            "statusAfter": (result.status_after or {}).get("raw") if result else None,
             "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         if not params.dry_run:

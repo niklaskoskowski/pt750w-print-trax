@@ -166,6 +166,7 @@ Im Container (`docker compose exec bridge …`) oder lokal mit `pip install Pill
 ```bash
 python3 -m ptbridge status
 python3 -m ptbridge probe                       # Status roh über Port 9100 und SNMP (Diagnose)
+python3 -m ptbridge watch 60                    # jede Statusänderung per SNMP live (Diagnose)
 python3 -m ptbridge print label.png --width-mm 30 --height-mm 14 --copies 2
 python3 -m ptbridge text "Kabel 12\nXLR 10 m" --cut half
 python3 -m ptbridge text "Test" --profile minimal   # minimaler Befehlssatz
@@ -207,6 +208,7 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 | `OFFLINE … did not answer` | Drucker aus / Auto-Power-Off / andere IP. `nc -vz <ip> 9100` vom Pi. |
 | `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
 | `state: sent`, `tapeSource: default` | Kein Status, weder Port 9100 noch SNMP. `docker compose exec bridge python3 -m ptbridge probe` zeigt beide Wege roh. SNMP im Drucker aktivieren (Web-Konfiguration / Printer Setting Tool) oder `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen bzw. in inventory *Expected tape* wählen. |
+| Fehlersuche Protokoll | `watch 60` in einem Terminal, im anderen drucken (Bridge oder Brother-App) – zeigt das Statuspaket roh. Der letzte Job liegt als `data/last-job.bin`, Job-Output enthält `statusBefore`/`statusAfter`. |
 | Drucker geht nach dem Job auf ERROR | Drucker aus/an. Dann `--profile minimal` testen; klappt das, `PTB_PROFILE=minimal` in `.env`. Die Bridge meldet den Fehler per SNMP (`Printer went into error after the job: …`). |
 | `state: sent`, `tapeSource: printer` | Normal bei Status per SNMP: Tape erkannt, nur die Druckbestätigung fehlt. |
 | `TAPE_MISMATCH` | inventory erwartet ein anderes Tape (Settings → Printer → *Expected tape*). |
