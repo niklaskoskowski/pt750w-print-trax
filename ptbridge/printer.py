@@ -5,11 +5,13 @@ One connection per job. The printer handles one client at a time, so every
 access goes through `Printer.lock` – concurrent HTTP requests queue up here
 instead of fighting over the socket.
 
-Status read-back over the network is best effort: the bridge asks for it
-first, and when the printer answers it uses the loaded tape width, refuses to
-print into an error (cover open, no tape) and waits for "printing completed".
-When it does not answer, the job is still sent, sized for the default tape,
-and reported as `sent` instead of `printed`.
+Status read-back is best effort, two ways: "ESC i S" on the print
+connection, and – because the PT-P750W often ignores that over Wi-Fi – the
+same 32-byte packet via SNMP (Brother private OID). With a status the bridge
+uses the loaded tape width and refuses to print into an error (cover open,
+no tape); over TCP it also waits for "printing completed". Without one the
+job is still sent, sized for the requested or default tape, and reported as
+`sent` instead of `printed`.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import protocol as p
+from .snmp import BROTHER_STATUS_OID, SYS_DESCR_OID, SnmpError, snmp_get
 
 log = logging.getLogger("ptbridge.printer")
 
@@ -47,18 +50,27 @@ class JobResult:
 
 class Printer:
     def __init__(self, host: str, port: int = 9100, *, connect_timeout: float = 5.0,
-                 status_timeout: float = 2.0, wait_timeout: float = 25.0, busy_timeout: float = 120.0):
+                 status_timeout: float = 2.0, wait_timeout: float = 25.0, busy_timeout: float = 120.0,
+                 snmp_community: str = "public", snmp_timeout: float = 1.5, snmp_port: int = 161):
         self.host = host
         self.port = port
         self.connect_timeout = connect_timeout
         self.status_timeout = status_timeout
         self.wait_timeout = wait_timeout
         self.busy_timeout = busy_timeout
+        self.snmp_community = snmp_community
+        self.snmp_timeout = snmp_timeout
+        self.snmp_port = snmp_port
         self.lock = threading.Lock()
         self.last_status: dict | None = None
         self.last_status_at: float | None = None
         self.last_error: str | None = None
         self.status_supported: bool | None = None
+        # How the last status came in: "tcp", "snmp" or None.
+        self.status_via: str | None = None
+        # Whether port 9100 answers "ESC i S". Once it has not, jobs stop
+        # waiting for it; an explicit status check asks again.
+        self.tcp_status: bool | None = None
 
     # -- connection -------------------------------------------------------
 
@@ -124,18 +136,42 @@ class Printer:
         if not self.lock.acquire(timeout=self.busy_timeout):
             raise PrinterError("BUSY", "Printer is busy with another job.", 503)
 
-    def _query(self, sock: socket.socket) -> dict | None:
-        sock.sendall(p.INVALIDATE + p.INITIALIZE + p.STATUS_REQUEST)
-        raw = self._read_packet(sock, self.status_timeout)
-        if raw is None:
-            self.status_supported = False
+    def _snmp_status(self) -> dict | None:
+        if not self.snmp_community:
             return None
         try:
-            status = p.parse_status(raw)
-        except ValueError:
-            log.warning("unexpected status reply: %s", raw.hex())
+            raw = snmp_get(self.host, BROTHER_STATUS_OID, self.snmp_community, self.snmp_timeout,
+                           port=self.snmp_port)
+        except SnmpError as exc:
+            log.debug("SNMP status: %s", exc)
             return None
-        self.status_supported = True
+        if not raw:
+            return None
+        try:
+            return p.parse_status(raw)
+        except ValueError:
+            log.warning("unexpected SNMP status value: %s", raw.hex())
+            return None
+
+    def _query(self, sock: socket.socket, probe_tcp: bool = False) -> dict | None:
+        status = None
+        via = None
+        if self.tcp_status is not False or probe_tcp:
+            sock.sendall(p.INVALIDATE + p.INITIALIZE + p.STATUS_REQUEST)
+            raw = self._read_packet(sock, self.status_timeout)
+            self.tcp_status = raw is not None
+            if raw is not None:
+                try:
+                    status, via = p.parse_status(raw), "tcp"
+                except ValueError:
+                    log.warning("unexpected status reply: %s", raw.hex())
+        else:
+            sock.sendall(p.INVALIDATE + p.INITIALIZE)
+        if status is None:
+            status = self._snmp_status()
+            via = "snmp" if status is not None else None
+        self.status_supported = status is not None
+        self.status_via = via
         self._remember(status)
         return status
 
@@ -147,11 +183,12 @@ class Printer:
         try:
             sock = self._connect()
             try:
-                status = self._query(sock)
+                status = self._query(sock, probe_tcp=True)
             finally:
                 self._close(sock, 0.3)
             self.last_error = None
-            return {"reachable": True, "status": status, "statusSupported": status is not None}
+            return {"reachable": True, "status": status, "statusSupported": status is not None,
+                    "statusVia": self.status_via}
         except PrinterError as exc:
             self.last_error = exc.message
             raise
@@ -186,10 +223,13 @@ class Printer:
                     raise PrinterError("SEND_FAILED", f"Connection dropped while sending: {exc}") from exc
 
                 result = JobResult(state="sent", status_before=before, status_after=None, bytes_sent=len(job))
-                if before is not None:
+                if before is not None and self.status_via == "tcp":
                     self._await(sock, pages, result)
+                elif before is not None:
+                    result.notes.append("Tape read via SNMP – job sent, completion not confirmed.")
                 else:
-                    result.notes.append("Printer does not report status over the network – job sent, not confirmed.")
+                    result.notes.append("No status from the printer (TCP 9100 or SNMP) – "
+                                        "sized for the requested/default tape, not confirmed.")
             finally:
                 self._close(sock, 1.0)
             self.last_error = None
@@ -229,3 +269,52 @@ class Printer:
                     break
         if result.state != "printed":
             result.notes.append("No completion message within the timeout – check the printer.")
+
+    # -- diagnostics ------------------------------------------------------
+
+    def probe(self, wait: float = 6.0) -> dict:
+        """Every way of reading the status, raw – for `python -m ptbridge probe`."""
+        out: dict = {"host": self.host, "port": self.port}
+        self._acquire()
+        try:
+            started = time.monotonic()
+            try:
+                sock = self._connect()
+            except PrinterError as exc:
+                out["tcp"] = {"connect": False, "error": exc.message}
+            else:
+                out["tcp"] = {"connect": True, "connectMs": int((time.monotonic() - started) * 1000)}
+                try:
+                    sock.sendall(p.INVALIDATE + p.INITIALIZE + p.STATUS_REQUEST)
+                    t0 = time.monotonic()
+                    raw = self._read_packet(sock, wait)
+                    out["tcp"]["statusReply"] = raw.hex() if raw else None
+                    if raw:
+                        out["tcp"]["replyMs"] = int((time.monotonic() - t0) * 1000)
+                        try:
+                            out["tcp"]["parsed"] = p.parse_status(raw)
+                        except ValueError as exc:
+                            out["tcp"]["parseError"] = str(exc)
+                finally:
+                    self._close(sock, 0.3)
+        finally:
+            self.lock.release()
+
+        snmp: dict = {"community": self.snmp_community}
+        for key, oid in (("sysDescr", SYS_DESCR_OID), ("brotherStatus", BROTHER_STATUS_OID)):
+            try:
+                value = snmp_get(self.host, oid, self.snmp_community or "public", 2.0, port=self.snmp_port)
+                if value is None:
+                    snmp[key] = "no such object"
+                elif key == "sysDescr":
+                    snmp[key] = value.decode("utf-8", "replace")
+                else:
+                    snmp[key] = value.hex()
+                    try:
+                        snmp["parsed"] = p.parse_status(value)
+                    except ValueError as exc:
+                        snmp["parseError"] = str(exc)
+            except SnmpError as exc:
+                snmp[key] = f"error: {exc}"
+        out["snmp"] = snmp
+        return out

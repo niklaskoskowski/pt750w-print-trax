@@ -52,6 +52,9 @@ class Config:
     max_upload_mb: float
     history: int
     max_copies: int
+    snmp_community: str
+    snmp_timeout: float
+    snmp_port: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -74,6 +77,10 @@ class Config:
             max_upload_mb=max(1.0, _float("PTB_MAX_UPLOAD_MB", 15.0)),
             history=max(0, _int("PTB_HISTORY", 50)),
             max_copies=max(1, _int("PTB_MAX_COPIES", 50)),
+            # Empty switches the SNMP status fallback off.
+            snmp_community=os.environ.get("PTB_SNMP_COMMUNITY", "public").strip(),
+            snmp_timeout=max(0.2, _float("PTB_SNMP_TIMEOUT", 1.5)),
+            snmp_port=_int("PTB_SNMP_PORT", 161),
         )
 
     def ensure_token(self) -> str:

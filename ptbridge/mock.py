@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from . import protocol as p
+from . import snmp
 from .raster import preview_png
 
 log = logging.getLogger("ptbridge.mock")
@@ -167,10 +168,32 @@ class Session:
             self.conn.close()
 
 
+def serve_snmp(host: str, port: int, tape_mm: int, errors: tuple[int, int]) -> None:
+    """Answers the Brother status OID and sysDescr, like the printer's SNMP agent."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((host, port))
+    log.info("mock SNMP agent on %s:%d/udp", host, port)
+    while True:
+        data, addr = sock.recvfrom(4096)
+        try:
+            version, community, request_id, oid = snmp.parse_request(data)
+        except (snmp.SnmpError, IndexError, ValueError):
+            continue
+        if community != "public":
+            continue
+        value = {
+            snmp.BROTHER_STATUS_OID: p.fake_status(tape_mm, errors=errors),
+            snmp.SYS_DESCR_OID: b"Brother NC-18002w, Firmware Ver.1.10 (mock)",
+        }.get(oid)
+        sock.sendto(snmp.get_response(request_id, oid, value, community, version), addr)
+
+
 def serve(host: str = "127.0.0.1", port: int = 9100, tape_mm: int = 18, out: str = "./mock-out",
-          silent: bool = False, errors: tuple[int, int] = (0, 0)) -> None:
+          silent: bool = False, errors: tuple[int, int] = (0, 0), snmp_port: int | None = None) -> None:
     out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if snmp_port:
+        threading.Thread(target=serve_snmp, args=(host, snmp_port, tape_mm, errors), daemon=True).start()
     srv = socket.create_server((host, port), reuse_port=False)
     log.info("mock PT-P750W on %s:%d, %d mm tape, pages -> %s%s", host, port, tape_mm, out_dir,
              " (silent)" if silent else "")

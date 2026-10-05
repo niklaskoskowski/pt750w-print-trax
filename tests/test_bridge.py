@@ -19,6 +19,7 @@ from ptbridge.config import Config  # noqa: E402
 from ptbridge.mock import serve_in_thread  # noqa: E402
 from ptbridge.raster import RenderOptions, canvas_to_lines, lines_to_canvas, render  # noqa: E402
 from ptbridge.service import ApiError, Bridge, JobParams  # noqa: E402
+from ptbridge import snmp  # noqa: E402
 
 
 def png(img: Image.Image) -> bytes:
@@ -101,24 +102,44 @@ class Status(unittest.TestCase):
         self.assertIn("Cover open", st["errors"])
 
 
+class Snmp(unittest.TestCase):
+    def test_request_roundtrip(self):
+        req = snmp.get_request(snmp.BROTHER_STATUS_OID, "public", 4242, 1)
+        self.assertEqual(snmp.parse_request(req), (1, "public", 4242, snmp.BROTHER_STATUS_OID))
+
+    def test_response_value_and_missing(self):
+        status = p.fake_status(12)
+        ok = snmp.get_response(7, snmp.BROTHER_STATUS_OID, status, "public", 1)
+        self.assertEqual(snmp.parse_response(ok, 7), status)
+        for version in (0, 1):
+            missing = snmp.get_response(8, snmp.BROTHER_STATUS_OID, None, "public", version)
+            self.assertIsNone(snmp.parse_response(missing, 8))
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-class EndToEnd(unittest.TestCase):
+class MockBase(unittest.TestCase):
     """Bridge -> mock printer over a real socket."""
 
-    def bridge(self, tape=18, silent=False):
+    def bridge(self, tape=18, silent=False, snmp_on=False):
         port = free_port()
+        snmp_port = free_port() if snmp_on else 0
         tmp = tempfile.mkdtemp()
-        serve_in_thread(host="127.0.0.1", port=port, tape_mm=tape, out=os.path.join(tmp, "out"), silent=silent)
+        serve_in_thread(host="127.0.0.1", port=port, tape_mm=tape, out=os.path.join(tmp, "out"), silent=silent,
+                        snmp_port=snmp_port or None)
         time.sleep(0.3)
         os.environ.update(PTB_PRINTER_HOST="127.0.0.1", PTB_PRINTER_PORT=str(port), PTB_DATA_DIR=tmp,
-                          PTB_STATUS_TIMEOUT="0.5", PTB_WAIT_TIMEOUT="3")
+                          PTB_STATUS_TIMEOUT="0.5", PTB_WAIT_TIMEOUT="3", PTB_SNMP_TIMEOUT="0.3",
+                          PTB_SNMP_PORT=str(snmp_port or free_port()))
         cfg = Config.from_env()
         return Bridge(cfg), Path(tmp, "out")
+
+
+class EndToEnd(MockBase):
 
     def test_print_and_confirm(self):
         bridge, out = self.bridge(18)
@@ -148,3 +169,28 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SnmpFallback(MockBase):
+    def test_silent_tcp_uses_snmp_tape(self):
+        bridge, out = self.bridge(12, silent=True, snmp_on=True)
+        res = bridge.print_text("hello", JobParams({}, bridge.cfg))
+        self.assertEqual(res["job"]["tapeMm"], 12)
+        self.assertEqual(res["job"]["tapeSource"], "printer")
+        self.assertEqual(res["job"]["state"], "sent")
+        self.assertEqual(bridge.printer.status_via, "snmp")
+        # Second job no longer waits for a TCP status that never comes.
+        started = time.monotonic()
+        bridge.print_text("again", JobParams({}, bridge.cfg))
+        self.assertLess(time.monotonic() - started, 2.0)
+        with self.assertRaises(ApiError) as ctx:
+            bridge.print_text("x", JobParams({"tapeMm": 18}, bridge.cfg))
+        self.assertEqual(ctx.exception.code, "TAPE_MISMATCH")
+
+    def test_probe(self):
+        bridge, _ = self.bridge(12, silent=True, snmp_on=True)
+        result = bridge.printer.probe(wait=0.5)
+        self.assertTrue(result["tcp"]["connect"])
+        self.assertIsNone(result["tcp"]["statusReply"])
+        self.assertEqual(result["snmp"]["parsed"]["tapeMm"], 12)
+        self.assertIn("Brother", result["snmp"]["sysDescr"])

@@ -286,8 +286,8 @@
     if (!st) {
       $('status-body').innerHTML = pr.reachable
         ? `<div class="alert alert-info small mb-0"><i class="bi bi-info-circle"></i>
-             Drucker erreichbar, meldet aber keinen Status über das Netzwerk. Gedruckt wird für das
-             Standard-Tape (${esc(b.defaults?.tapeMm)} mm).</div>`
+             Drucker erreichbar, meldet aber keinen Status (weder Port 9100 noch SNMP). Gedruckt wird
+             für das gewählte bzw. Standard-Tape (${esc(b.defaults?.tapeMm)} mm).</div>`
         : `<div class="text-secondary small">${pr.lastError ? esc(pr.lastError) : 'Noch nicht abgefragt.'}</div>`;
       setConn(pr.reachable ? 'ok' : (pr.lastError ? 'err' : 'unk'));
       return;
@@ -303,6 +303,7 @@
         <dt>Farbe</dt><dd>${esc(st.textColor)} auf ${esc(st.tapeColor)}</dd>
         <dt>Druckbereich</dt><dd>${st.printablePins ? (st.printablePins * 25.4 / 180).toFixed(1) + ' mm (' + st.printablePins + ' dots)' : '–'}</dd>
         <dt>Zustand</dt><dd>${st.errors?.length ? 'Fehler' : (st.phase === 'printing' ? 'druckt' : 'bereit')}</dd>
+        <dt>Status via</dt><dd>${pr.statusVia === 'snmp' ? 'SNMP' : pr.statusVia === 'tcp' ? 'Port 9100' : '–'}</dd>
         <dt>Stand</dt><dd>${esc(when)}</dd>
       </dl>`;
     setConn(st.errors?.length ? 'warn' : 'ok');

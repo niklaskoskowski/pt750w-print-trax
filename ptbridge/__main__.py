@@ -1,6 +1,7 @@
 """
 python -m ptbridge [serve]                 HTTP bridge (default)
 python -m ptbridge status                  ask the printer
+python -m ptbridge probe                   raw status over TCP 9100 and SNMP (diagnostics)
 python -m ptbridge print FILE [options]    print an image
 python -m ptbridge text "TEXT" [options]   print a text label
 python -m ptbridge dump FILE -o job.bin    raw printer bytes, e.g. for: nc <printer> 9100 < job.bin
@@ -63,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("serve", help="run the HTTP bridge (default)")
     sub.add_parser("status", help="query the printer")
+    sub.add_parser("probe", help="raw status over TCP 9100 and SNMP, for diagnostics")
     sub.add_parser("token", help="print the API token")
 
     pr = sub.add_parser("print", help="print an image file")
@@ -95,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     mk.add_argument("--out", default="./mock-out")
     mk.add_argument("--silent", action="store_true", help="never answer (like a printer without read-back)")
     mk.add_argument("--cover-open", action="store_true", help="report 'cover open'")
+    mk.add_argument("--snmp-port", type=int, help="also answer SNMP status on this UDP port")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -105,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "mock":
         from .mock import serve as mock_serve
-        mock_serve(args.host, args.port, args.tape, args.out, args.silent, (0, 0x10) if args.cover_open else (0, 0))
+        mock_serve(args.host, args.port, args.tape, args.out, args.silent,
+                   (0, 0x10) if args.cover_open else (0, 0), args.snmp_port)
         return 0
 
     if cmd == "dump":
@@ -138,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if cmd == "status":
             print(json.dumps(bridge.status(), indent=2, ensure_ascii=False))
+        elif cmd == "probe":
+            print(json.dumps(bridge.printer.probe(), indent=2, ensure_ascii=False))
         elif cmd == "print":
             params = JobParams(_params(args, {
                 "widthMm": args.width_mm, "heightMm": args.height_mm, "fit": args.fit,

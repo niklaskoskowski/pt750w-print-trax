@@ -14,8 +14,9 @@ Browser ──► inventory (Webhosting) ──HTTPS + Token──► Cloudflare
 
 - **Kein Treiber, kein CUPS.** Python 3 + Pillow, Docker-Image für arm64/armhf/amd64.
 - **Tape-Erkennung:** fragt vor jedem Druck den Status ab (Tape-Breite, Fehler wie *Abdeckung offen*,
-  *kein Tape*) und skaliert das Etikett passend. Meldet der Drucker keinen Status übers Netz, wird
-  für `PTB_DEFAULT_TAPE_MM` gedruckt.
+  *kein Tape*) und skaliert das Etikett passend – erst über Port 9100, und weil der PT-P750W das per
+  WLAN oft ignoriert, zusätzlich per **SNMP** (Brother-OID, Community `public`). Kommt auf keinem
+  Weg ein Status, wird für das erwartete Tape des Auftrags bzw. `PTB_DEFAULT_TAPE_MM` gedruckt.
 - **Exakte Größe:** Etiketten werden in mm übergeben und mit 180 dpi 1:1 gedruckt; zu hohe Etiketten
   werden auf den Druckbereich des Tapes verkleinert (mit Warnung).
 - **Warteschlange:** ein Auftrag nach dem anderen, parallele Requests warten.
@@ -163,6 +164,7 @@ Im Container (`docker compose exec bridge …`) oder lokal mit `pip install Pill
 
 ```bash
 python3 -m ptbridge status
+python3 -m ptbridge probe                       # Status roh über Port 9100 und SNMP (Diagnose)
 python3 -m ptbridge print label.png --width-mm 30 --height-mm 14 --copies 2
 python3 -m ptbridge text "Kabel 12\nXLR 10 m" --cut half
 python3 -m ptbridge token                       # API-Token anzeigen
@@ -202,7 +204,8 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 | `PermissionError: … /data/previews` | `./data` gehört einem anderen User. Ab dieser Version übernimmt der Container `./data` beim Start selbst (`PUID`/`PGID` in `.env`); alte Version: `sudo chown -R 1000:1000 data`. |
 | `OFFLINE … did not answer` | Drucker aus / Auto-Power-Off / andere IP. `nc -vz <ip> 9100` vom Pi. |
 | `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
-| `state: sent`, Status leer | Drucker liefert keinen Status übers Netz → `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen. |
+| `state: sent`, `tapeSource: default` | Kein Status, weder Port 9100 noch SNMP. `docker compose exec bridge python3 -m ptbridge probe` zeigt beide Wege roh. SNMP im Drucker aktivieren (Web-Konfiguration / Printer Setting Tool) oder `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen bzw. in inventory *Expected tape* wählen. |
+| `state: sent`, `tapeSource: printer` | Normal bei Status per SNMP: Tape erkannt, nur die Druckbestätigung fehlt. |
 | `TAPE_MISMATCH` | inventory erwartet ein anderes Tape (Settings → Printer → *Expected tape*). |
 | Etikett zu klein | 12-mm-Tape eingelegt – Inventory-Labels brauchen 18/24 mm für 1:1. |
 | Cloudflare 502 | Origin falsch: `http://` (nicht https), richtiger Host/Port aus Sicht von cloudflared. |

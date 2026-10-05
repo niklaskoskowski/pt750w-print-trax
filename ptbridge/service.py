@@ -128,6 +128,9 @@ class Bridge:
             connect_timeout=cfg.connect_timeout,
             status_timeout=cfg.status_timeout,
             wait_timeout=cfg.wait_timeout,
+            snmp_community=cfg.snmp_community,
+            snmp_timeout=cfg.snmp_timeout,
+            snmp_port=cfg.snmp_port,
         )
         self.jobs = JobLog(cfg.data_dir, cfg.history)
         self.started = time.time()
@@ -160,6 +163,7 @@ class Bridge:
                 "statusAt": self.printer.last_status_at,
                 "lastError": self.printer.last_error,
                 "statusSupported": self.printer.status_supported,
+                "statusVia": self.printer.status_via,
             }
             return out
         try:
