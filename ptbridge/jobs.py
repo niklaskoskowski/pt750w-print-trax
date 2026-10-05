@@ -28,7 +28,14 @@ class JobLog:
         self.lock = threading.Lock()
         self.jobs: list[dict] = []
         if keep:
-            self.dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self.dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # Printing must not depend on the history: run without it.
+                log.error("job history off – cannot write %s (%s). Fix: chown the data directory "
+                          "to the user the bridge runs as.", self.dir, exc.strerror or exc)
+                self.keep = 0
+                return
             try:
                 loaded = json.loads(self.file.read_text(encoding="utf-8"))
                 if isinstance(loaded, list):

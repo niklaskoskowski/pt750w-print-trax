@@ -86,9 +86,15 @@ class Config:
             if self.token:
                 log.info("API token loaded from %s", path)
                 return self.token
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.token = secrets.token_urlsafe(32)
-        path.write_text(self.token + "\n", encoding="utf-8")
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            path.write_text(self.token + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(
+                f"Cannot store a generated token in {path} ({exc.strerror or exc}). "
+                "Set PTB_TOKEN in .env, or make the data directory writable."
+            ) from exc
         try:
             path.chmod(0o600)
         except OSError:

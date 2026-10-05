@@ -199,6 +199,7 @@ tar -czf pt750w-backup-$(date +%Y%m%d-%H%M%S).tar.gz compose.yaml .env data/
 
 | Symptom | Ursache / Lösung |
 |---|---|
+| `PermissionError: … /data/previews` | `./data` gehört einem anderen User. Ab dieser Version übernimmt der Container `./data` beim Start selbst (`PUID`/`PGID` in `.env`); alte Version: `sudo chown -R 1000:1000 data`. |
 | `OFFLINE … did not answer` | Drucker aus / Auto-Power-Off / andere IP. `nc -vz <ip> 9100` vom Pi. |
 | `BUSY` | Ein anderer Auftrag läuft länger als 120 s. |
 | `state: sent`, Status leer | Drucker liefert keinen Status übers Netz → `PTB_DEFAULT_TAPE_MM` auf das eingelegte Tape setzen. |
