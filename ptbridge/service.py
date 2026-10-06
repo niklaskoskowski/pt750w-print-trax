@@ -101,7 +101,7 @@ class JobParams:
         self.profile = _choice(src, "profile", p.PROFILES, default_profile)
         if self.profile not in p.HIGH_RES_PROFILES:
             self.render.high_res = False
-        default_batch = cfg.batch_mode if cfg.batch_mode in p.BATCH_MODES else "once"
+        default_batch = cfg.batch_mode if cfg.batch_mode in p.BATCH_MODES else "perpage"
         self.batch_mode = _choice(src, "batchMode", p.BATCH_MODES, default_batch)
 
     def job_options(self, tape_mm: int, media_type: int) -> p.JobOptions:

@@ -143,6 +143,9 @@ HIGH_RES_PROFILES = ("standard", "compat")
 # How a job of several pages (batch, copies) carries the page settings. The
 # printer only shows the difference: one half-cut strip, or every label
 # ejected and cut with its own leader. `python -m ptbridge batchtest` tries them.
+# The PT-P750W applies "no chain printing" (feed + cut) at the end of EVERY
+# page it is in force for – sent per page (legacy) or once (once) alike, every
+# label came out on its own. So the default chains all pages but the last.
 #   once:      ESC i M/K/d + M before the first page only; then ESC i z + raster + FF
 #   chain:     like once, with chain printing on – Ctrl-Z at the end feeds and cuts
 #   perpage:   settings on every page, chain printing on for all but the last
@@ -249,7 +252,7 @@ class JobOptions:
     compress: bool = True
     validate_media: bool = False
     profile: str = "compat"
-    batch_mode: str = "once"
+    batch_mode: str = "perpage"
 
 
 def _print_info(opts: JobOptions, lines: int, page: int, pages: int) -> bytes:
@@ -355,7 +358,7 @@ def build_pages(pages: list[list[bytes]], opts: JobOptions, *, preamble: bool = 
         out += COMPRESSION_TIFF
     out += RASTER_MODE
     encoded: dict[int, bytes] = {}
-    batch = opts.batch_mode if opts.batch_mode in BATCH_MODES else "once"
+    batch = opts.batch_mode if opts.batch_mode in BATCH_MODES else "perpage"
     for index, lines in enumerate(pages):
         last = index == len(pages) - 1
         if opts.profile not in ("plain", "ptouch"):

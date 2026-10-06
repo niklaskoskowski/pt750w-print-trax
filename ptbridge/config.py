@@ -92,7 +92,8 @@ class Config:
             # 180 x 360 dpi: twice the resolution along the tape. Default on.
             high_res=_bool("PTB_HIGH_RES", True),
             # How multi-page jobs carry their settings – see protocol.BATCH_MODES.
-            batch_mode=_env("PTB_BATCH_MODE", "once").lower(),
+            # perpage: chain printing on until the last page – one half-cut strip on the PT-P750W.
+            batch_mode=_env("PTB_BATCH_MODE", "perpage").lower(),
         )
 
     def ensure_token(self) -> str:

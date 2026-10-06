@@ -213,9 +213,11 @@ Halbschnitt, Kettendruck und eigener Rand wirken nur bei `standard` und `compat`
 
 Ein Batch ist ein Job mit einer Seite pro Etikett. Ob der Drucker daraus **einen** Streifen macht
 (Halbschnitt zwischen den Etiketten, ein Vollschnitt am Ende) oder jedes Etikett mit eigenem Vorlauf
-auswirft, hängt davon ab, wie die Schnitt-/Kettendruck-Einstellungen im Job stehen. Standard
-`PTB_BATCH_MODE=once`: Einstellungen einmal am Anfang, danach pro Seite nur Print-Info, Raster, `FF`.
-Klappt das nicht:
+auswirft, hängt davon ab, wie die Schnitt-/Kettendruck-Einstellungen im Job stehen. Der PT-P750W
+wendet „kein Kettendruck“ (Vorschub + Schnitt) am Ende **jeder** Seite an, für die es gilt – deshalb
+Standard `PTB_BATCH_MODE=perpage`: Kettendruck an bis zur vorletzten Seite, nur die letzte wird
+ausgeworfen und geschnitten. Der Modus lässt sich auch pro Job wählen (`batchMode`, im Inventory unter
+Settings → Printer → *Strip mode*). Klappt das nicht:
 
 ```bash
 docker compose exec bridge python3 -m ptbridge batchtest
@@ -223,9 +225,9 @@ docker compose exec bridge python3 -m ptbridge batchtest
 
 | Modus | Inhalt |
 |---|---|
-| `once` | **Standard.** `ESC i M/K/d` + `M` nur vor der ersten Seite |
-| `chain` | wie `once`, Kettendruck an – Vorschub + Schnitt durch das abschließende `Ctrl-Z` |
-| `perpage` | Einstellungen auf jeder Seite, Kettendruck an bis zur letzten |
+| `perpage` | **Standard.** Einstellungen auf jeder Seite, Kettendruck an bis zur letzten |
+| `chain` | Einstellungen einmal, Kettendruck an – Vorschub + Schnitt nur durch das abschließende `Ctrl-Z` |
+| `once` | `ESC i M/K/d` + `M` nur vor der ersten Seite („kein Kettendruck“ gilt dann für alle Seiten) |
 | `noautocut` | wie `once`, Auto-Cut aus – nur Halbschnitte |
 | `legacy` | Einstellungen + „kein Kettendruck“ auf jeder Seite (bis 1.0: jedes Etikett einzeln geschnitten) |
 
