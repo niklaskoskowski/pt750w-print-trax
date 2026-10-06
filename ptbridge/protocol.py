@@ -359,6 +359,9 @@ def build_pages(pages: list[list[bytes]], opts: JobOptions, *, preamble: bool = 
     out += RASTER_MODE
     encoded: dict[int, bytes] = {}
     batch = opts.batch_mode if opts.batch_mode in BATCH_MODES else "noautocut"
+    if len(pages) == 1:
+        # One label is no strip: the cut settings exactly as asked for.
+        batch = "legacy"
     for index, lines in enumerate(pages):
         last = index == len(pages) - 1
         if opts.profile not in ("plain", "ptouch"):

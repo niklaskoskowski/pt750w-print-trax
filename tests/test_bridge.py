@@ -353,6 +353,13 @@ class BatchModes(unittest.TestCase):
             self.assertTrue(job(mode).endswith(b"\x1a"), mode)
 
 
+class SinglePage(unittest.TestCase):
+    def test_one_label_keeps_auto_cut_whatever_the_strip_mode(self):
+        for mode in p.BATCH_MODES:
+            job = p.build_job([b"\xff" * 16], p.JobOptions(tape_mm=12, batch_mode=mode))
+            self.assertIn(b"\x1b\x69\x4d\x40", job, mode)
+
+
 class Shift(unittest.TestCase):
     def test_shift_pads_the_other_side(self):
         from ptbridge.service import shift_lines
