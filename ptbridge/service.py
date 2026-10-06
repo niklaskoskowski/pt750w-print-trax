@@ -97,11 +97,13 @@ class JobParams:
         self.name = str(src.get("jobName") or "").strip()[:120]
         self.source = str(src.get("source") or "").strip()[:60]
         self.dry_run = _flag(src, "dryRun", False)
+        # Calibration: moves the print along the tape relative to the cuts.
+        self.shift_mm = round(_num(src, "shiftMm", -10, 10, cfg.shift_mm), 2)
         default_profile = cfg.profile if cfg.profile in p.PROFILES else "compat"
         self.profile = _choice(src, "profile", p.PROFILES, default_profile)
         if self.profile not in p.HIGH_RES_PROFILES:
             self.render.high_res = False
-        default_batch = cfg.batch_mode if cfg.batch_mode in p.BATCH_MODES else "perpage"
+        default_batch = cfg.batch_mode if cfg.batch_mode in p.BATCH_MODES else "noautocut"
         self.batch_mode = _choice(src, "batchMode", p.BATCH_MODES, default_batch)
 
     def job_options(self, tape_mm: int, media_type: int) -> p.JobOptions:
@@ -128,6 +130,22 @@ def decode_image_field(value) -> bytes:
         return base64.b64decode(value, validate=False)
     except (binascii.Error, ValueError) as exc:
         raise ApiError("BAD_REQUEST", "image is not valid base64") from exc
+
+
+def shift_lines(lines: list[bytes], shift_mm: float, high_res: bool) -> list[bytes]:
+    """
+    Moves a page's print along the tape relative to where the printer cuts.
+    The cutter sits a little off the head on some printers, so a label comes
+    out off-centre between its cuts. Negative: towards the end of the strip
+    that comes out first; positive: towards the end that comes out last.
+    Done by blank lines on the other side – twice the shift, since the page
+    grows on one side only – so the label itself keeps its size.
+    """
+    if not shift_mm:
+        return lines
+    dots = p.mm_to_dots(abs(shift_mm) * 2, p.DPI * 2 if high_res else p.DPI)
+    blank = [bytes(p.LINE_BYTES)] * dots
+    return blank + lines if shift_mm > 0 else lines + blank
 
 
 # --- batches ----------------------------------------------------------------
@@ -330,9 +348,10 @@ class Bridge:
         def build(status: dict | None) -> tuple[bytes, int]:
             tape, source = self._tape_for(status, params)
             rendered: list[Rendered] = make(tape)
-            holder.update(rendered=rendered, tape=tape, source=source)
+            shifted = [shift_lines(r.lines, params.shift_mm, r.high_res) for r in rendered]
+            holder.update(rendered=rendered, shifted=shifted, tape=tape, source=source)
             media = status["mediaType"] if status else 0x01
-            pages = [r.lines for r in rendered] * params.copies
+            pages = shifted * params.copies
             job = p.build_pages(pages, params.job_options(tape, media), preamble=False)
             if not params.dry_run:
                 self._keep_last_job(p.INVALIDATE + p.INITIALIZE + job)
@@ -357,7 +376,7 @@ class Bridge:
         rendered = rendered_all[0]
         margin_dots = p.mm_to_dots(params.margin_mm)
         gap = 2 * margin_dots * (2 if rendered.high_res else 1)
-        preview = preview_strip([r.lines for r in rendered_all], holder["tape"], gap, rendered.high_res)
+        preview = preview_strip(holder["shifted"], holder["tape"], gap, rendered.high_res)
         warnings: list[str] = []
         for r in rendered_all:
             for warning in r.warnings:
@@ -383,6 +402,7 @@ class Bridge:
             "rotated": rendered.rotated,
             "cut": params.cut,
             "highRes": rendered.high_res,
+            "shiftMm": params.shift_mm,
             "batchMode": params.batch_mode,
             "warnings": warnings + ([] if result is None else result.notes),
             "pagesConfirmed": 0 if result is None else result.pages_confirmed,

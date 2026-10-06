@@ -87,7 +87,7 @@ def run(bridge: Bridge, start: str | None = None) -> int:
     return 0 if results and results[-1]["printed"] else 1
 
 
-BATCH_ORDER = ("perpage", "chain", "once", "noautocut")
+BATCH_ORDER = ("noautocut", "perpage", "chain", "once")
 
 
 def run_batch(bridge: Bridge, start: str | None = None) -> int:

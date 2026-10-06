@@ -213,10 +213,9 @@ Halbschnitt, Kettendruck und eigener Rand wirken nur bei `standard` und `compat`
 
 Ein Batch ist ein Job mit einer Seite pro Etikett. Ob der Drucker daraus **einen** Streifen macht
 (Halbschnitt zwischen den Etiketten, ein Vollschnitt am Ende) oder jedes Etikett mit eigenem Vorlauf
-auswirft, hängt davon ab, wie die Schnitt-/Kettendruck-Einstellungen im Job stehen. Der PT-P750W
-wendet „kein Kettendruck“ (Vorschub + Schnitt) am Ende **jeder** Seite an, für die es gilt – deshalb
-Standard `PTB_BATCH_MODE=perpage`: Kettendruck an bis zur vorletzten Seite, nur die letzte wird
-ausgeworfen und geschnitten. Der Modus lässt sich auch pro Job wählen (`batchMode`, im Inventory unter
+auswirft, hängt davon ab, wie die Schnitt-/Kettendruck-Einstellungen im Job stehen. Am echten PT-P750W
+(12 mm TZe, WLAN) ergab **`noautocut`** einen Streifen – Auto-Cut aus, Halbschnitt an, Einstellungen
+einmal am Anfang, ein Vollschnitt am Ende. Das ist der Standard (`PTB_BATCH_MODE=noautocut`). Der Modus lässt sich auch pro Job wählen (`batchMode`, im Inventory unter
 Settings → Printer → *Strip mode*). Klappt das nicht:
 
 ```bash
@@ -225,11 +224,19 @@ docker compose exec bridge python3 -m ptbridge batchtest
 
 | Modus | Inhalt |
 |---|---|
-| `perpage` | **Standard.** Einstellungen auf jeder Seite, Kettendruck an bis zur letzten |
+| `perpage` | Einstellungen auf jeder Seite, Kettendruck an bis zur letzten |
 | `chain` | Einstellungen einmal, Kettendruck an – Vorschub + Schnitt nur durch das abschließende `Ctrl-Z` |
 | `once` | `ESC i M/K/d` + `M` nur vor der ersten Seite („kein Kettendruck“ gilt dann für alle Seiten) |
-| `noautocut` | wie `once`, Auto-Cut aus – nur Halbschnitte |
+| `noautocut` | **Standard.** Wie `once`, Auto-Cut aus – Halbschnitte zwischen den Etiketten, ein Vollschnitt am Ende |
 | `legacy` | Einstellungen + „kein Kettendruck“ auf jeder Seite (bis 1.0: jedes Etikett einzeln geschnitten) |
+
+### Etikett nicht mittig zwischen den Schnitten
+
+Das Messer sitzt mechanisch nicht exakt dort, wo der Drucker es annimmt – das Etikett landet dann
+ein paar Zehntelmillimeter neben der Mitte seines Abschnitts. `PTB_SHIFT_MM` (bzw. pro Job `shiftMm`,
+im Inventory Settings → Printer → *Strip offset*) verschiebt den Druck gegenüber den Schnitten:
+negativ = Richtung des Streifenendes, das zuerst herauskommt, positiv = Richtung des Endes, das zuletzt
+herauskommt. In 0,1-mm-Schritten nachstellen.
 
 ## Ohne Drucker testen
 

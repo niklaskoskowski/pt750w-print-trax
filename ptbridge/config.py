@@ -59,6 +59,7 @@ class Config:
     close_wait: float
     high_res: bool
     batch_mode: str
+    shift_mm: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -92,8 +93,10 @@ class Config:
             # 180 x 360 dpi: twice the resolution along the tape. Default on.
             high_res=_bool("PTB_HIGH_RES", True),
             # How multi-page jobs carry their settings – see protocol.BATCH_MODES.
-            # perpage: chain printing on until the last page – one half-cut strip on the PT-P750W.
-            batch_mode=_env("PTB_BATCH_MODE", "perpage").lower(),
+            # noautocut: what gave one half-cut strip on a real PT-P750W.
+            batch_mode=_env("PTB_BATCH_MODE", "noautocut").lower(),
+            # Calibration, mm: the print moved along the tape relative to the cuts.
+            shift_mm=max(-10.0, min(10.0, _float("PTB_SHIFT_MM", 0.0))),
         )
 
     def ensure_token(self) -> str:

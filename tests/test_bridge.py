@@ -281,11 +281,11 @@ class Batch(MockBase):
         self.assertEqual(len(list(out.glob("*.png"))), 3)   # three pages …
         self.assertEqual(len(bridge.jobs.list()), 1)        # … one job
         job_bytes = (Path(bridge.cfg.data_dir) / "last-job.bin").read_bytes()
-        # Default batch mode "perpage": half cut + chain on the first pages, half cut + no chain on the
-        # last (all with 360 dpi) – one strip, fed and cut once at the end.
-        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b\x44"), 2)
-        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b\x4c"), 1)
-        self.assertLess(job_bytes.index(b"\x1b\x69\x4b\x44"), job_bytes.index(b"\x1b\x69\x4b\x4c"))
+        # Default batch mode "noautocut" (what the real P750W makes one strip of): auto cut off,
+        # half cut + no chain + 360 dpi, once, up front.
+        self.assertEqual(job_bytes.count(b"\x1b\x69\x4b"), 1)
+        self.assertIn(b"\x1b\x69\x4b\x4c", job_bytes)
+        self.assertIn(b"\x1b\x69\x4d\x00", job_bytes)
         # … and every page still has its own print information.
         self.assertEqual(job_bytes.count(b"\x1b\x69\x7a"), 3)
         self.assertEqual(job_bytes.count(b"\x0c\x1b\x69\x7a"), 2)   # FF, then the next page
@@ -351,3 +351,16 @@ class BatchModes(unittest.TestCase):
         for mode in p.BATCH_MODES:
             self.assertEqual(job(mode).count(b"\x1b\x69\x7a"), 3, mode)
             self.assertTrue(job(mode).endswith(b"\x1a"), mode)
+
+
+class Shift(unittest.TestCase):
+    def test_shift_pads_the_other_side(self):
+        from ptbridge.service import shift_lines
+        ink = [b"\xff" * 16] * 10
+        self.assertIs(shift_lines(ink, 0, False), ink)
+        earlier = shift_lines(ink, -0.5, False)          # towards the end that comes out first
+        self.assertEqual(earlier[:10], ink)
+        self.assertEqual(len(earlier) - 10, p.mm_to_dots(1.0))
+        later = shift_lines(ink, 0.5, True)               # 360 dpi along the tape
+        self.assertEqual(later[-10:], ink)
+        self.assertEqual(len(later) - 10, p.mm_to_dots(1.0, 360))
